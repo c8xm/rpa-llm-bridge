@@ -16,6 +16,7 @@ OUT = ROOT / "docs" / "assets"
 OUT.mkdir(parents=True, exist_ok=True)
 
 FONT_CJK = r"C:\Windows\Fonts\msyh.ttc"
+FONT_CJK_BOLD = r"C:\Windows\Fonts\msyhbd.ttc"
 FONT_MONO = r"C:\Windows\Fonts\consola.ttf"
 FONT_MONO_BOLD = r"C:\Windows\Fonts\consolab.ttf"
 
@@ -249,6 +250,80 @@ def demo_image(lines: list[str]) -> Path:
         y += lh
 
     path = OUT / "demo.png"
+    img.save(path, "PNG")
+    return path
+
+
+def social() -> Path:
+    """1280x640 社交分享卡片：左边一句话定位，右边三层结构。"""
+    W, H = 1280, 640
+    img = Image.new("RGB", (W, H), "#0b1220")
+    d = ImageDraw.Draw(img)
+
+    # 背景渐变
+    for y in range(H):
+        ratio = y / H
+        r = int(11 + 8 * ratio)
+        g = int(18 + 13 * ratio)
+        b = int(32 + 22 * ratio)
+        d.line([(0, y), (W, y)], fill=(r, g, b))
+
+    # 网格
+    for x in range(0, W, 40):
+        d.line([(x, 0), (x, H)], fill="#121d31")
+    for y in range(0, H, 40):
+        d.line([(0, y), (W, y)], fill="#121d31")
+
+    left = 76
+    d.text((left, 70), "GITHUB.COM/C8XM/RPA-LLM-BRIDGE", font=font(FONT_MONO, 18), fill="#6e7681")
+
+    d.text((left - 4, 108), "rpa-llm-bridge", font=font(FONT_CJK_BOLD, 82), fill="#e6edf3")
+    d.rectangle((left, 226, left + 96, 232), fill="#58a6ff")
+
+    d.text((left, 248), "把 LLM 接到 RPA 上", font=font(FONT_CJK_BOLD, 46), fill="#58a6ff")
+    d.text((left, 318), "一套统一 action 契约，驱动", font=font(FONT_CJK, 25), fill="#c9d1d9")
+    d.text(
+        (left, 356),
+        "浏览器 · Windows 桌面 · Office 文件",
+        font=font(FONT_CJK, 25),
+        fill="#c9d1d9",
+    )
+    d.text(
+        (left, 398),
+        "YAML 编排 · 策略闸门 · 审计留痕 · 断点续跑",
+        font=font(FONT_CJK, 23),
+        fill="#8b949e",
+    )
+
+    chips = ["MCP", "Python 3.11+", "MIT", "27 tools", "43 tests"]
+    x = left
+    for text in chips:
+        f = font(FONT_CJK, 20)
+        w = d.textlength(text, font=f)
+        d.rounded_rectangle((x, 466, x + w + 30, 508), radius=21, fill="#16233c", outline="#2f4468")
+        d.text((x + 15, 476), text, font=f, fill="#a5d6ff")
+        x += w + 30 + 12
+
+    # 右侧结构
+    rx1, rx2 = 782, 1204
+    boxes = [
+        ("MCP 客户端", "Codex · Claude · Cursor"),
+        ("server.py", "27 个工具 · 参数收敛"),
+        ("Policy / Runner / Audit", "闸门 · 编排 · 留痕"),
+        ("browser · desktop · office", "统一 execute(action, params)"),
+    ]
+    y = 104
+    for index, (title, sub) in enumerate(boxes):
+        box = (rx1, y, rx2, y + 92)
+        fill = "#16233c" if index else "#1b2b47"
+        rounded(d, box, fill, "#2f4468", radius=14, width=2)
+        d.text(((rx1 + rx2) / 2, y + 30), title, font=font(FONT_CJK_BOLD, 25), fill="#e6edf3", anchor="mm")
+        d.text(((rx1 + rx2) / 2, y + 62), sub, font=font(FONT_CJK, 19), fill="#8b949e", anchor="mm")
+        if index < len(boxes) - 1:
+            arrow(d, (rx1 + rx2) / 2, y + 92, (rx1 + rx2) / 2, y + 118, color="#3d5a80", width=3, head=10)
+        y += 118
+
+    path = OUT / "social-preview.png"
     img.save(path, "PNG")
     return path
 
