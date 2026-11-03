@@ -1,0 +1,27 @@
+name: social_publish
+description: 内容平台发布：填入草稿，发布动作强制人工确认
+driver: browser
+vars:
+  editor_url: "https://example.com/editor"
+  title: "本周更新"
+steps:
+  - id: open
+    action: navigate
+    url: "{{editor_url}}"
+  - id: elements
+    action: elements
+    limit: 80
+  - id: fill_title
+    action: fill
+    ref: e1
+    text: "{{title}}"
+    label: 标题
+  - id: preview
+    action: screenshot
+    name: publish-preview.png
+  - id: publish
+    action: click
+    ref: e2
+    label: 发布
+    hitl: true
+    description: 发布不可回滚，必须人工确认

@@ -1,0 +1,24 @@
+name: web_form
+description: 通用网页表单：打开页面、列出元素、填写普通字段，提交前交还人工确认
+driver: browser
+vars:
+  form_url: "https://example.com/form"
+  name_value: "张三"
+steps:
+  - id: open
+    action: navigate
+    url: "{{form_url}}"
+  - id: list
+    action: elements
+    limit: 60
+  - id: fill_name
+    action: fill
+    ref: e1
+    text: "{{name_value}}"
+    label: 姓名
+  - id: submit
+    action: click
+    ref: e2
+    label: 提交
+    hitl: true
+    description: 提交属于不可逆动作，必须人工确认后再执行

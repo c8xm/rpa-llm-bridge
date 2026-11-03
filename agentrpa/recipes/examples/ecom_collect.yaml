@@ -1,0 +1,25 @@
+name: ecom_collect
+description: 电商搜索结果采集：打开搜索页，抓取商品卡片字段并保留页面快照
+driver: browser
+vars:
+  search_url: "https://search.jd.com/Search?keyword=%E6%9C%BA%E6%A2%B0%E9%94%AE%E7%9B%98"
+steps:
+  - id: open
+    action: navigate
+    url: "{{search_url}}"
+    description: 打开搜索结果页
+  - id: settle
+    action: wait
+    ms: 1500
+  - id: cards
+    action: extract
+    description: 抓取商品标题与价格
+    selectors:
+      page_title: "title"
+    multi:
+      titles: ".gl-item .p-name a"
+      prices: ".gl-item .p-price strong"
+    limit: 30
+  - id: snapshot
+    action: snapshot
+    max_chars: 4000

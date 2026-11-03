@@ -1,0 +1,21 @@
+name: office_report
+description: 办公报表：读取源表、按行列写入汇总表
+driver: office
+vars:
+  source_xlsx: "data/source.xlsx"
+  report_xlsx: "data/report.xlsx"
+steps:
+  - id: sheets
+    action: sheets
+    path: "{{source_xlsx}}"
+  - id: read
+    action: read
+    path: "{{source_xlsx}}"
+    max_rows: 200
+  - id: write
+    action: write
+    path: "{{report_xlsx}}"
+    sheet: 汇总
+    cells:
+      A1: 生成时间
+      B1: "{{now}}"

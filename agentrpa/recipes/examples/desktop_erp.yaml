@@ -1,0 +1,27 @@
+name: desktop_erp
+description: 桌面 ERP 录入：启动客户端、定位窗口、填写单据并读取回显
+driver: desktop
+vars:
+  app_path: "C:\\Program Files\\ExampleERP\\erp.exe"
+  doc_no: "PO-2026-0001"
+steps:
+  - id: launch
+    action: launch
+    app: "{{app_path}}"
+    description: 需先在 ALLOWED_APPS 中授权该可执行文件
+  - id: windows
+    action: windows
+  - id: focus
+    action: focus
+    title: ".*ERP.*"
+  - id: fill_doc
+    action: fill
+    name: 单据编号
+    text: "{{doc_no}}"
+  - id: save
+    action: click
+    name: 保存
+    hitl: true
+  - id: readback
+    action: read
+    limit: 120
