@@ -59,8 +59,8 @@
 要求 Windows 10/11（桌面驱动）/ macOS·Linux（浏览器与 Office 驱动）、Python 3.11+。
 
 ```powershell
-git clone https://github.com/c8xm/AgentRPA.git
-cd AgentRPA
+git clone https://github.com/c8xm/rpa-llm-bridge.git
+cd rpa-llm-bridge
 python -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -U pip
 .\.venv\Scripts\python.exe -m pip install -e ".[dev]"
