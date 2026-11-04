@@ -90,7 +90,7 @@ python examples\local_demo.py
 ### 2.4 验证安装
 
 ```powershell
-python -m pytest                          # 99 passed（内核 43 + 桥 51 + 反方向 5）
+python -m pytest                          # 110 passed
 python server.py --help 2>$null; echo $LASTEXITCODE   # v0.1 MCP 入口可加载
 python agentrpa_bridge\yingdao_mcp_server.py --selftest
 ```
@@ -175,6 +175,10 @@ agentrpa_agent_avg_ms{agent="codex"} 70
 | `YINGDAO_SHADOWBOT` | 本地模式：`ShadowBot.exe` 路径 |
 | `YINGDAO_USER_FOLDER` | 本地模式：影刀用户目录 |
 | `YINGDAO_LAUNCH_ARGS` | 本地模式启动参数模板，支持 `{app}` `{params_json}` |
+| `YINGDAO_ALLOWED_APPS` | 应用白名单；生产必填，空 = 开发模式放行 |
+| `YINGDAO_APPROVAL_APPS` | 需人工审批的应用，调用时必须带 `approved_by` |
+| `YINGDAO_MAX_PER_APP` | 单应用并发上限，= 该应用可用机器人数 |
+| `YINGDAO_IDEMPOTENCY_TTL` | 幂等窗口（秒），同参重复提交返回原 jobId |
 
 ### 4.4 RPA 工位侧
 
@@ -480,6 +484,38 @@ python examples\reverse_demo.py
 同理，把 `examples/mock_yingdao_server.py` 换成任意 HTTP 服务（UiPath Orchestrator、
 自研调度、企业内部 API），只需改 `yingdao_api.py` 的 `DEFAULT_PATHS`，本仓库的其他部分不动。
 
+### 8.2 企业护栏（生产必开）
+
+反向 MCP 进程内置四条规则，配置在**进程环境变量**上：
+
+| 变量 | 行为 | 生产建议 |
+|---|---|---|
+| `YINGDAO_ALLOWED_APPS` | 白名单外的应用直接拒绝，不产生任务 | 只放已评审的应用 |
+| `YINGDAO_APPROVAL_APPS` | 清单内应用必须带 `approved_by`，否则返回 `requires_approval` | 资金/对外发送类流程 |
+| `YINGDAO_MAX_PER_APP` | 单应用并发上限，满了返回 `busy`（不排队） | = 该应用可用机器人数 |
+| `YINGDAO_IDEMPOTENCY_TTL` | 同参数窗口内重复提交返回同一 jobId（`deduplicated: true`） | 900 |
+
+```powershell
+$env:YINGDAO_ALLOWED_APPS    = "app_invoice,app_reconcile"
+$env:YINGDAO_APPROVAL_APPS   = "app_reconcile"
+$env:YINGDAO_MAX_PER_APP     = "2"
+$env:YINGDAO_IDEMPOTENCY_TTL = "900"
+python agentrpa_bridge\yingdao_mcp_server.py --selftest
+# policy: {"whitelist_enforced": true, "approval_apps": ["app_reconcile"], "max_per_app": 2, ...}
+```
+
+智能体侧看到的拒绝是结构化 JSON（`isError: true`），可直接分支处理：
+
+```json
+{"error": "requires_approval", "message": "应用 app_reconcile 属于审批清单，必须提供 approved_by…"}
+{"error": "busy", "app_id": "app_invoice", "limit": 2}
+{"error": "app_not_allowed", "allowed": ["app_invoice", "app_reconcile"]}
+```
+
+新增工具 `rpa_policy` 可随时查看当前护栏与在跑任务数，便于智能体自己判断"能不能再开一个"。
+完整的企业接入路径（角色分工、四阶段、评审问答、验收清单）见
+[ENTERPRISE-ADOPTION.md](ENTERPRISE-ADOPTION.md)。
+
 ---
 
 ## 9. 和 v0.1 内核一起用
@@ -592,7 +628,7 @@ MCP 会话是串行的（一条 stdio 管道），**要真并行就同名多实�
 ## 13. 开发与测试
 
 ```powershell
-python -m pytest                                   # 全部 99 个用例
+python -m pytest                                   # 全部 110 个用例
 python -m pytest tests/test_gateway.py -v          # 单文件
 python -m unittest tests.test_gateway              # 桥的部分不需要 pytest
 ruff check agentrpa agentrpa_bridge server.py tests --select E9,F63,F7,F82
@@ -607,7 +643,7 @@ agentrpa/                  v0.1 内核：core / drivers / recipes
 agentrpa_bridge/           v2.0 桥：mcp_client / providers / gateway / yingdao_*
 sdk/rpa_agent_block.py     影刀代码块单文件 SDK
 scripts/                   export_mcp_config.py / install_windows.ps1 / make_assets.py
-tests/                     99 个用例（内核 43 + 桥 51 + 反方向 5）
+tests/                     110 个用例（内核 43 + 桥 51 + 反方向 5 + 护栏 11）
 examples/local_demo.py     无 key 端到端演示
 ```
 

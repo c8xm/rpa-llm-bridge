@@ -10,7 +10,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 ![python](https://img.shields.io/badge/python-3.11%20%7C%203.12-blue)
 
-📖 **[详细使用说明（USAGE.md）](docs/USAGE.md)** · 🧭 **[平台接入对照（PLATFORMS.md）](docs/PLATFORMS.md)** · 🧱 **[设计取舍](docs/BRIDGE_DESIGN.md)**
+📖 **[详细使用说明（USAGE.md）](docs/USAGE.md)** · 🏢 **[企业接入方案](docs/ENTERPRISE-ADOPTION.md)** · 🧭 **[平台接入对照（PLATFORMS.md）](docs/PLATFORMS.md)** · 🧱 **[设计取舍](docs/BRIDGE_DESIGN.md)**
 
 ---
 
@@ -45,6 +45,19 @@
 | 反向 MCP | `agentrpa_bridge/yingdao_mcp_server.py` 暴露 `rpa_list_apps / rpa_app_params / rpa_start_job / rpa_query_job / rpa_clients` |
 | 配置导出 | `scripts/export_mcp_config.py` 幂等写入 WorkBuddy / Claude / Cursor，并打印 Codex TOML |
 | 审计与指标 | jsonl（prompt 指纹 + 前 200 字符 + 密钥正则脱敏）、Prometheus 文本指标 |
+
+### v2.1 新增：企业护栏
+
+反向触发 RPA 属于对内部系统的写操作，比模型调用更需要按"应用"维度管：
+
+| 护栏 | 变量 | 行为 |
+|---|---|---|
+| 应用白名单 | `YINGDAO_ALLOWED_APPS` | 白名单外直接拒绝，不产生任务 |
+| 人工审批 | `YINGDAO_APPROVAL_APPS` | 必须带 `approved_by`，否则 `requires_approval` |
+| 单应用并发 | `YINGDAO_MAX_PER_APP` | 满则 `busy`，不排队、不堆积 |
+| 幂等窗口 | `YINGDAO_IDEMPOTENCY_TTL` | 同参重复提交返回同一 `jobId`，不会重复跑 |
+
+新增 `rpa_policy` 工具，智能体可自行查看护栏状态与在跑任务数。落地路径（角色、四阶段、评审问答、验收清单）见 [企业接入方案](docs/ENTERPRISE-ADOPTION.md)。
 
 ## 快速开始
 
@@ -98,7 +111,7 @@ python -m venv .venv
 
 v0.1 内核（27 个 MCP 工具，详见 [USAGE.md](docs/USAGE.md)）：`server_info` / `policy_summary` / `driver_status` / `browser_*` / `open_url` / `page_snapshot` / `list_page_elements` / `click_page_element` / `type_into_element` / `scroll_page` / `take_screenshot` / `extract_page` / `recipe_list|get|run` / `run_state|resume|list` / `audit_tail` / `desktop_*` / `office_*`
 
-v2.0 反向（影刀）：`rpa_list_apps` / `rpa_app_params` / `rpa_start_job` / `rpa_query_job` / `rpa_clients` / `rpa_run_local`
+v2.0 反向（影刀）：`rpa_list_apps` / `rpa_app_params` / `rpa_start_job` / `rpa_query_job` / `rpa_clients` / `rpa_run_local` / `rpa_policy`
 
 ## 项目结构
 
@@ -111,13 +124,14 @@ rpa-llm-bridge/
 │  ├─ providers.py           codex / claude / dsh / 豆包 / OpenAI / CLI + 会话池
 │  ├─ gateway.py             企业网关（鉴权·并发·限速·审计·指标·异步）
 │  ├─ yingdao_api.py         影刀开放 API（签名可替换）+ 本地 ShadowBot
+│  ├─ policy.py              企业护栏：白名单 / 审批 / 单应用并发 / 幂等
 │  └─ yingdao_mcp_server.py  反向 MCP：RPA 应用作为工具
 ├─ sdk/rpa_agent_block.py    影刀代码块单文件 SDK（3.8+）
 ├─ scripts/                  export_mcp_config.py / install_windows.ps1 / make_assets.py
 ├─ examples/                 local_demo.py（RPA 调智能体）/ reverse_demo.py（智能体调 RPA）
 │                            mock_yingdao_server.py（没有影刀环境时的假开放 API）
-├─ tests/                    99 个用例（内核 43 + 桥 51 + 反方向 5）
-└─ docs/                     USAGE.md / PLATFORMS.md / BRIDGE_DESIGN.md / DESIGN.md / HANDOFF.md
+├─ tests/                    110 个用例（内核 43 + 桥 51 + 反方向 5 + 护栏 11）
+└─ docs/                     USAGE.md / ENTERPRISE-ADOPTION.md / PLATFORMS.md / BRIDGE_DESIGN.md / DESIGN.md
 ```
 
 ## 安全模型

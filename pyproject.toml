@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "rpa-llm-bridge"
-version = "2.0.0"
+version = "2.1.0"
 description = "企业 RPA 与智能体之间的双向桥：MCP 工具层 + 声明式 Recipe + 策略闸门（v0.1 内核），以及 RPA ↔ Codex/Claude/dsh/豆包 的网关与 SDK（v2.0）"
 readme = "README.md"
 requires-python = ">=3.11"
