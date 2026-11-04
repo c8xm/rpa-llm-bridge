@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from conftest import FakeDriver, make_step
+from tests.conftest import FakeDriver, make_step
 
 from agentrpa.core.runner import RecipeRunner
 

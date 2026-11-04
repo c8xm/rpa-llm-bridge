@@ -15,6 +15,7 @@ dist/
 .ms-playwright/
 artifacts/*
 !artifacts/.gitkeep
+tests/_artifacts/
 
 # 配置与密钥
 .env

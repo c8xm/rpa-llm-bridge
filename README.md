@@ -1,202 +1,142 @@
 # rpa-llm-bridge
 
-**把 LLM 接到 RPA 上**：一套统一的 action 契约，同时驱动浏览器、Windows 桌面应用和 Office 文件；用 YAML 描述流程，用策略闸门管住不可逆动作，用审计日志留下每一步的痕迹。
+**企业 RPA 与智能体之间的双向桥。** 一套仓库，两个方向：
 
-内核代号 `AgentRPA`，Python 包名 `agentrpa`。
-
-通过 [MCP](https://modelcontextprotocol.io) 暴露给 Codex / Claude Desktop / Cursor 等客户端，让模型能真正"操作"本机软件，而不是只会说。
+- **v0.1 内核（`agentrpa`）**：智能体通过 MCP 驱动浏览器 / Windows 桌面 / Office，统一 action 契约、YAML Recipe、Policy 闸门、hitl 暂停、断点续跑、审计。
+- **v2.0 桥（`agentrpa_bridge`）**：影刀 / UiPath / Power Automate 反过来调用 Codex / Claude / DeepSeek Harness / 豆包，凭证托管、进程复用、并发闸门、限速、审计、指标；同时把影刀应用注册成 MCP 工具给智能体调用。
 
 [![CI](https://github.com/c8xm/rpa-llm-bridge/actions/workflows/ci.yml/badge.svg)](https://github.com/c8xm/rpa-llm-bridge/actions/workflows/ci.yml)
+![version](https://img.shields.io/badge/version-2.0.0-blue)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![Python](https://img.shields.io/badge/python-3.11%20%7C%203.12-blue.svg)](pyproject.toml)
+![python](https://img.shields.io/badge/python-3.11%20%7C%203.12-blue)
+
+📖 **[详细使用说明（USAGE.md）](docs/USAGE.md)** · 🧭 **[平台接入对照（PLATFORMS.md）](docs/PLATFORMS.md)** · 🧱 **[设计取舍](docs/BRIDGE_DESIGN.md)**
 
 ---
 
-## 这个项目和"电商采集器"有什么不同
-
-多数 RPA 项目只覆盖一个网站、一种交互。AgentRPA 把差异抽到三层里：
-
-| 维度 | 单站点采集器 | AgentRPA |
-|---|---|---|
-| 作用域 | 一个网站 | 浏览器 / 桌面应用 / Office 文件 |
-| 流程定义 | 写死在代码里 | YAML Recipe，可 diff、可版本化、可参数化 |
-| 安全边界 | 分散在各函数里 | 集中式 `Policy`，所有驱动共用 |
-| 不可逆动作 | 靠自觉 | 默认拦截 + 人工确认 + 断点续跑 |
-| 可追溯性 | 打日志了事 | 结构化审计 jsonl，敏感字段强制脱敏 |
-| 失败恢复 | 重跑整个脚本 | run 状态落盘，`run_resume` 从暂停点继续 |
-
 ## 架构
 
-![架构图](docs/assets/architecture.png)
+```
+方向 A：智能体 → 电脑（v0.1）
+  Codex / Claude / Cursor ──MCP──▶ 浏览器(Playwright) · Windows 桌面(pywinauto) · Office(openpyxl/docx)
 
-三个核心概念：
+方向 B：RPA → 智能体（v2.0）
+  影刀 / UiPath / Power Automate
+        │  sdk/rpa_agent_block.py（零依赖，可粘进代码块）或 HTTP
+        ▼
+  agentrpa-bridge gateway   鉴权 · 并发 · 限速 · 审计 · /metrics · 异步任务
+        ├── stdio MCP ──▶ codex mcp-server / claude mcp serve / 自研 MCP
+        ├── CLI      ──▶ dsh headless（DeepSeek Harness）
+        └── HTTP     ──▶ 豆包（火山方舟）/ DeepSeek / vLLM / 私有网关
 
-- **Driver**：实现 `BaseDriver.execute(action, params)`。新增一种被控端 = 新增一个驱动，执行器与策略层零改动。
-- **Recipe**：YAML 声明的步骤序列。步骤可声明 `hitl: true` 强制人工确认，可声明 `on_error: skip|retry|abort`。
-- **Policy**：唯一的安全判定点。域名白名单、应用白名单、敏感字段拦截、状态变更闸门都在这里，驱动不许自己另立标准。
+方向 C：智能体 → RPA（v2.0 反向）
+  Codex / Claude / WorkBuddy ──MCP──▶ yingdao_mcp_server.py ──▶ 影刀 startJob / queryJob
+```
+
+企业里的分工：**RPA 当"手"，智能体当"脑"，桥负责把两边都变成对方能调用的形状，并把凭证、并发、审计、超时集中管住。**
+
+## v2.0 新增
+
+| 能力 | 说明 |
+|---|---|
+| 企业网关 | `POST /v1/invoke`、`POST /v1/jobs`、`/v1/agents`、`/healthz`、`/metrics`；Bearer 鉴权、per-tenant 限速、并发信号量、排队超时 503 |
+| 后端适配 | Codex（MCP，常驻会话）、Claude Code（工具面）、dsh headless（一次性长任务）、豆包/火山方舟、任意 OpenAI 兼容、自研 MCP |
+| 影刀 SDK | `sdk/rpa_agent_block.py` 单文件、Python 3.8+、零依赖；自动在"网关模式"与"本地 stdio"之间切换 |
+| 反向 MCP | `agentrpa_bridge/yingdao_mcp_server.py` 暴露 `rpa_list_apps / rpa_app_params / rpa_start_job / rpa_query_job / rpa_clients` |
+| 配置导出 | `scripts/export_mcp_config.py` 幂等写入 WorkBuddy / Claude / Cursor，并打印 Codex TOML |
+| 审计与指标 | jsonl（prompt 指纹 + 前 200 字符 + 密钥正则脱敏）、Prometheus 文本指标 |
 
 ## 快速开始
 
-要求 Windows 10/11（桌面驱动）/ macOS·Linux（浏览器与 Office 驱动）、Python 3.11+。
+### 只跑桥（零第三方依赖）
 
 ```powershell
 git clone https://github.com/c8xm/rpa-llm-bridge.git
 cd rpa-llm-bridge
-python -m venv .venv
-.\.venv\Scripts\python.exe -m pip install -U pip
-.\.venv\Scripts\python.exe -m pip install -e ".[dev]"
-.\.venv\Scripts\python.exe -m playwright install chromium
-Copy-Item .env.example .env
+python examples\local_demo.py                       # 不需要任何 API key
+python -m unittest tests.test_mcp_client tests.test_providers tests.test_gateway tests.test_sdk tests.test_yingdao tests.test_platforms
 ```
 
-启动（stdio 模式会被客户端拉起，直接运行会停在等待状态）：
+起网关：
 
 ```powershell
+$env:AGENTRPA_TOKENS = "tenantA:tok-a"
+$env:AGENTRPA_ALLOW_ANON = "0"
+python -m agentrpa_bridge.gateway --port 8765
+```
+
+调一次：
+
+```powershell
+curl -s -X POST http://127.0.0.1:8765/v1/invoke `
+  -H "Authorization: Bearer tok-a" -H "Content-Type: application/json" `
+  -d '{"agent":"codex","prompt":"把 11300 含税金额按 13% 拆出税额，只返回数字","meta":{"flow":"invoice_tax"}}'
+```
+
+### 跑内核（智能体操作本机）
+
+```powershell
+python -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -e ".[dev]"
+.\.venv\Scripts\python.exe -m playwright install chromium
 .\.venv\Scripts\python.exe server.py
 ```
 
-## MCP 客户端配置
+## 后端怎么选
 
-Codex（`%USERPROFILE%\.codex\config.toml`）：
-
-```toml
-[mcp_servers.agentrpa]
-command = "<PROJECT_DIR>/.venv/Scripts/python.exe"
-args = ["<PROJECT_DIR>/server.py"]
-cwd = "<PROJECT_DIR>"
-enabled = true
-startup_timeout_sec = 30
-tool_timeout_sec = 180
-
-[mcp_servers.agentrpa.env]
-PLAYWRIGHT_HEADLESS = "false"
-ALLOW_STATE_CHANGING_ACTIONS = "false"
-ALLOWED_DOMAINS = "jd.com,taobao.com,tmall.com"
-```
-
-Cursor / Claude Desktop（JSON）：
-
-```json
-{
-  "mcpServers": {
-    "agentrpa": {
-      "command": "<PROJECT_DIR>\\.venv\\Scripts\\python.exe",
-      "args": ["<PROJECT_DIR>\\server.py"],
-      "env": {
-        "PLAYWRIGHT_HEADLESS": "false",
-        "ALLOW_STATE_CHANGING_ACTIONS": "false",
-        "ALLOWED_DOMAINS": "jd.com,taobao.com,tmall.com"
-      }
-    }
-  }
-}
-```
-
-## 内置流程
-
-| Recipe | 场景 | 驱动 | 说明 |
+| 场景 | `agent` | 形态 | 单次耗时 |
 |---|---|---|---|
-| `ecom_collect` | 电商信息采集 | browser | 打开搜索页，抽取标题与价格，附页面快照 |
-| `web_form` | 通用网页 RPA | browser | 填普通字段，提交前强制人工确认 |
-| `desktop_erp` | 桌面 ERP 录入 | desktop | 启动客户端、定位窗口、填单据、读回显 |
-| `office_report` | 企业报表 | office | 读源表、写汇总表 |
-| `social_publish` | 内容平台运营 | browser | 填草稿、截图预览，发布动作人工确认 |
+| 改脚本、跑命令、要工具 | `codex` | MCP 常驻 | 3–15 s |
+| 长任务（分钟级） | `dsh` | CLI 一次性 | 冷启动 2–5 s + 任务 |
+| 中文文本生成、量大 | `doubao` | OpenAI 兼容 | 1–8 s |
+| 模型在本机动手 | `claude` | MCP 工具面 | 取决于工具 |
+| 离线/私有模型 | `llm` | OpenAI 兼容 | 取决于部署 |
 
-自定义流程只要往 `agentrpa/recipes/examples/` 丢一个 YAML：
-
-```yaml
-name: my_flow
-description: 我的流程
-driver: browser
-vars:
-  target: "https://example.com"
-steps:
-  - id: open
-    action: navigate
-    url: "{{target}}"
-  - id: grab
-    action: extract
-    multi:
-      titles: "h2"
-    limit: 10
-```
+接法与坑见 [PLATFORMS.md](docs/PLATFORMS.md)：WorkBuddy 是 MCP 客户端而非后端；`claude mcp serve` 是工具集合不是问答；豆包 `model` 必须填接入点 `ep-...`；dsh 只读 `.env` 里的凭据。
 
 ## 工具清单
 
-| 工具 | 作用 |
-|---|---|
-| `server_info` | 版本、驱动能力、策略摘要、目录 |
-| `policy_summary` | 白名单与拦截规则 |
-| `driver_status` | 三个驱动的健康检查 |
-| `browser_start` / `browser_status` / `browser_close` | 浏览器生命周期 |
-| `open_url` | 打开白名单域名 URL |
-| `page_snapshot` | 标题、正文摘要、链接、表单、meta |
-| `list_page_elements` | 列出可交互元素并分配短期 ref |
-| `click_page_element` | 点击元素（命中交易类文案会被拦截） |
-| `type_into_element` | 写普通输入框（敏感字段拒绝） |
-| `scroll_page` / `take_screenshot` / `extract_page` | 滚动、截图、按选择器批量抽取 |
-| `recipe_list` / `recipe_get` / `recipe_run` | 流程发现与执行 |
-| `run_state` / `run_resume` / `run_list` | 断点查看与人工批准后继续 |
-| `audit_tail` | 审计日志（已脱敏） |
-| `desktop_windows` / `desktop_focus` / `desktop_elements` | 桌面窗口与控件 |
-| `office_sheets` / `office_read` / `office_write` | Excel / Word 读写 |
+v0.1 内核（27 个 MCP 工具，详见 [USAGE.md](docs/USAGE.md)）：`server_info` / `policy_summary` / `driver_status` / `browser_*` / `open_url` / `page_snapshot` / `list_page_elements` / `click_page_element` / `type_into_element` / `scroll_page` / `take_screenshot` / `extract_page` / `recipe_list|get|run` / `run_state|resume|list` / `audit_tail` / `desktop_*` / `office_*`
 
-## 安全模型
-
-1. **域名白名单**：`ALLOWED_DOMAINS` 之外一律拒绝，含同形域名（`jd.com.evil.cn`）。
-2. **应用白名单**：桌面驱动在 `ALLOWED_APPS` 为空时拒绝启动任何进程。
-3. **敏感字段**：密码、验证码、OTP、银行卡、CVV、身份证等标签直接拒绝输入，审计日志同步脱敏。
-4. **状态变更闸门**：购买、支付、下单、发布、发送、删除等动作默认拦截；需要人工确认时流程停在 `awaiting_human`，由人决定是否 `run_resume`。
-5. **不注入、不伪造**：不往页面里注入反检测脚本，不伪造浏览器指纹，不绕过验证码与风控。
-6. **可追溯**：每一步的 action、判定结果、耗时都落到 `artifacts/audit/<date>.jsonl`。
+v2.0 反向（影刀）：`rpa_list_apps` / `rpa_app_params` / `rpa_start_job` / `rpa_query_job` / `rpa_clients` / `rpa_run_local`
 
 ## 项目结构
 
 ```text
 rpa-llm-bridge/
-├─ server.py                      MCP 工具入口
-├─ agentrpa/
-│  ├─ config.py                   环境变量配置
-│  ├─ core/
-│  │  ├─ types.py                 Step / StepResult / RunResult / Decision
-│  │  ├─ policy.py                白名单与闸门
-│  │  ├─ runner.py                执行器与断点续跑
-│  │  ├─ audit.py                 审计日志与脱敏
-│  │  └─ registry.py              驱动注册表
-│  ├─ drivers/
-│  │  ├─ base.py                  统一 action 契约
-│  │  ├─ web.py                   Playwright 驱动
-│  │  ├─ desktop.py               pywinauto 驱动
-│  │  └─ office.py                Excel / Word 驱动
-│  └─ recipes/
-│     ├─ loader.py                YAML 校验与模板渲染
-│     └─ examples/*.yaml          五个场景示例
-├─ tests/                         43 个单元测试，不需要打开浏览器
-├─ docs/DESIGN.md                 设计取舍
-└─ .github/workflows/ci.yml       多版本 CI
+├─ server.py                 v0.1 MCP 工具层
+├─ agentrpa/                 v0.1 内核：core / drivers / recipes
+├─ agentrpa_bridge/          v2.0 桥
+│  ├─ mcp_client.py          最小 MCP stdio 客户端（纯 stdlib）
+│  ├─ providers.py           codex / claude / dsh / 豆包 / OpenAI / CLI + 会话池
+│  ├─ gateway.py             企业网关（鉴权·并发·限速·审计·指标·异步）
+│  ├─ yingdao_api.py         影刀开放 API（签名可替换）+ 本地 ShadowBot
+│  └─ yingdao_mcp_server.py  反向 MCP：RPA 应用作为工具
+├─ sdk/rpa_agent_block.py    影刀代码块单文件 SDK（3.8+）
+├─ scripts/                  export_mcp_config.py / install_windows.ps1 / make_assets.py
+├─ examples/local_demo.py    无 key 端到端演示
+├─ tests/                    94 个用例（内核 43 + 桥 51）
+└─ docs/                     USAGE.md / PLATFORMS.md / BRIDGE_DESIGN.md / DESIGN.md / HANDOFF.md
 ```
 
-## 开发
+## 安全模型
 
-```powershell
-.\.venv\Scripts\python.exe -m pytest
-.\.venv\Scripts\python.exe -m pytest tests/test_runner.py -v
-```
-
-单元测试只覆盖纯逻辑（策略、执行器、模板、审计），不启动浏览器与桌面进程，因此 CI 在 Linux 上也能跑。
-
-![运行验证](docs/assets/demo.png)
-
-图片由 `scripts/make_assets.py` 调用真实命令生成，不是手绘示意图。
+1. **凭证分层**：工位只有网关 token；模型 key 只存网关机；影刀 AccessKey 只存反向 MCP 进程。
+2. **审计脱敏**：`prompt` 只留前 200 字符 + sha256；`sk-*` / `ghp_*` / `AKIA*` / `Bearer *` 统一 `[REDACTED]`。
+3. **配额与背压**：默认 60 req/min/tenant、4 并发；打满排队超时回 503，不无限堆积。
+4. **不可逆动作不外包**：下单、支付、发布、删除仍留在 RPA 的审批节点，桥不提供"agent 直接确认"的通道。
+5. **v0.1 的 Policy 闸门照旧**：域名白名单、应用白名单、敏感字段拦截、状态变更人工确认。
 
 ## 路线图
 
-- [ ] Recipe 步骤级重试策略可视化（当前只有计数）
-- [ ] 多驱动混合流程（浏览器取数 → Excel 落表 → 桌面录入）
-- [ ] 录制回放：把一次人工操作转成 Recipe 草稿
-- [ ] 审计日志按 run 聚合查询与导出
-- [ ] 桌面驱动的控件级截图对比回归
+- [x] v0.1 多驱动内核（浏览器 / 桌面 / Office）
+- [x] v2.0 企业网关 + 影刀 SDK + 反向 MCP + 多后端适配
+- [ ] `dsh headless --json` 事件流 → 网关 SSE 进度接口
+- [ ] 同名多实例调度（`codex-1..N`）与按工单 hash 分片
+- [ ] 审计按 run 聚合查询与导出
+- [ ] 录制回放：一次人工操作转成 Recipe 草稿
+- [ ] 桌面控件截图回归
 
-## 上游与许可
+## 许可
 
-MIT。本项目在架构思路上参考了 [JD-Taobao-MCP](https://github.com/HaonanYu123/JD-Taobao-MCP) 的人机协同与输出契约设计，代码为独立实现，来源与改动记录见 [UPSTREAM.md](UPSTREAM.md)。
+MIT © 2026 c8xm。架构思路参考 [JD-Taobao-MCP](https://github.com/HaonanYu123/JD-Taobao-MCP)，代码为独立实现，来源记录见 [UPSTREAM.md](UPSTREAM.md)。

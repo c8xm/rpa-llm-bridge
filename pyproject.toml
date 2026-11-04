@@ -4,13 +4,13 @@ build-backend = "hatchling.build"
 
 [project]
 name = "rpa-llm-bridge"
-version = "0.1.0"
-description = "驱动无关的本地 RPA Agent：MCP 工具层 + 声明式 Recipe + 人工闸门 + 审计日志"
+version = "2.0.0"
+description = "企业 RPA 与智能体之间的双向桥：MCP 工具层 + 声明式 Recipe + 策略闸门（v0.1 内核），以及 RPA ↔ Codex/Claude/dsh/豆包 的网关与 SDK（v2.0）"
 readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "MIT" }
 authors = [{ name = "c8xm" }]
-keywords = ["rpa", "mcp", "agent", "playwright", "automation", "llm"]
+keywords = ["rpa", "mcp", "agent", "playwright", "automation", "llm", "yingdao", "codex", "gateway"]
 classifiers = [
   "Programming Language :: Python :: 3.11",
   "Programming Language :: Python :: 3.12",
@@ -33,13 +33,16 @@ dev = ["pytest>=8", "pytest-asyncio>=0.24", "ruff>=0.6"]
 
 [project.urls]
 Homepage = "https://github.com/c8xm/rpa-llm-bridge"
+Documentation = "https://github.com/c8xm/rpa-llm-bridge/blob/main/docs/USAGE.md"
 Issues = "https://github.com/c8xm/rpa-llm-bridge/issues"
 
 [project.scripts]
 agentrpa = "server:main"
+agentrpa-gateway = "agentrpa_bridge.gateway:main"
+agentrpa-rpa-mcp = "agentrpa_bridge.yingdao_mcp_server:main"
 
 [tool.hatch.build.targets.wheel]
-packages = ["agentrpa"]
+packages = ["agentrpa", "agentrpa_bridge"]
 include = ["server.py"]
 
 [tool.pytest.ini_options]
@@ -49,5 +52,8 @@ asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
 
 [tool.ruff]
-line-length = 100
+line-length = 112
 target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I"]
