@@ -90,7 +90,7 @@ python examples\local_demo.py
 ### 2.4 验证安装
 
 ```powershell
-python -m pytest                          # 94 passed（内核 43 + 桥 51）
+python -m pytest                          # 99 passed（内核 43 + 桥 51 + 反方向 5）
 python server.py --help 2>$null; echo $LASTEXITCODE   # v0.1 MCP 入口可加载
 python agentrpa_bridge\yingdao_mcp_server.py --selftest
 ```
@@ -447,6 +447,39 @@ python scripts\export_mcp_config.py --print              # 只看不写
 python agentrpa_bridge\yingdao_mcp_server.py --selftest
 ```
 
+### 8.1 没有影刀系统怎么验证
+
+反方向不是"必须有影刀才能跑"——它对外的契约就是 HTTP，所以仓库里带了一个假影刀开放 API
+（`examples/mock_yingdao_server.py`），路由、字段、状态流转与真实接口一致：
+
+```powershell
+python examples\reverse_demo.py
+```
+
+真实输出：
+
+```
+假影刀开放 API: http://127.0.0.1:55040
+已连上 MCP 服务: {'name': 'yingdao-rpa', 'version': '0.2.0'}
+工具: ['rpa_list_apps', 'rpa_app_params', 'rpa_start_job', 'rpa_query_job', 'rpa_clients']
+
+[1] 应用列表: ['发票批量下载', '银行对账单核对']
+[2] 入参定义: ['月份', '税号']
+[3] 已启动任务: job_3b69791ade
+    状态 queued   进度 0%
+    状态 running  进度 45%
+    状态 success  进度 100%
+[4] 最终结果: {"rows": 128, "file": "D:\\rpa\\out\\app_invoice_job_3b69791ade.xlsx", ...}
+[5] 机器人: [('财务机器人-01', '在线'), ('财务机器人-02', '在线')]
+```
+
+这条链路跑通说明：MCP 服务、工具 schema、JSON 解析、"启动-轮询-取结果"的状态机、错误分支
+全都是对的。等拿到影刀控制台时，只需把 `YINGDAO_API_BASE` 指过去、填 AccessKey，
+再按 [PLATFORMS.md](PLATFORMS.md) 核一遍路径与签名即可。
+
+同理，把 `examples/mock_yingdao_server.py` 换成任意 HTTP 服务（UiPath Orchestrator、
+自研调度、企业内部 API），只需改 `yingdao_api.py` 的 `DEFAULT_PATHS`，本仓库的其他部分不动。
+
 ---
 
 ## 9. 和 v0.1 内核一起用
@@ -559,7 +592,7 @@ MCP 会话是串行的（一条 stdio 管道），**要真并行就同名多实�
 ## 13. 开发与测试
 
 ```powershell
-python -m pytest                                   # 全部 94 个用例
+python -m pytest                                   # 全部 99 个用例
 python -m pytest tests/test_gateway.py -v          # 单文件
 python -m unittest tests.test_gateway              # 桥的部分不需要 pytest
 ruff check agentrpa agentrpa_bridge server.py tests --select E9,F63,F7,F82
@@ -574,7 +607,7 @@ agentrpa/                  v0.1 内核：core / drivers / recipes
 agentrpa_bridge/           v2.0 桥：mcp_client / providers / gateway / yingdao_*
 sdk/rpa_agent_block.py     影刀代码块单文件 SDK
 scripts/                   export_mcp_config.py / install_windows.ps1 / make_assets.py
-tests/                     94 个用例（内核 43 + 桥 51）
+tests/                     99 个用例（内核 43 + 桥 51 + 反方向 5）
 examples/local_demo.py     无 key 端到端演示
 ```
 

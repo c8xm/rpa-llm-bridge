@@ -65,15 +65,13 @@ class GatewayTest(unittest.TestCase):
         self.assertEqual(code, 200)
         self.assertEqual(body["status"], "ok")
 
-    def test_auth_required_when_token_configured(self):
-        cfg = self.httpd.state.config
-        cfg.allow_anon_localhost = False
-        try:
-            code, body = self._call("/v1/invoke", {"agent": "echo", "prompt": "x"})
-            self.assertEqual(code, 401)
-            self.assertEqual(body["error"], "unauthorized")
-        finally:
-            cfg.allow_anon_localhost = True
+    def test_auth_required_with_bad_token(self):
+        # 用错 token 验证鉴权分支：不依赖 allow_anon 开关，避免跨用例改共享状态
+        code, body = self._call("/v1/invoke", {"agent": "echo", "prompt": "x"},
+                                token="not-a-real-token")
+        self.assertEqual(code, 401)
+        self.assertEqual(body["error"], "unauthorized")
+        self.assertTrue(body["request_id"])
 
     def test_invoke_with_token(self):
         code, body = self._call("/v1/invoke", {"agent": "echo", "prompt": "你好",

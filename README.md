@@ -114,8 +114,9 @@ rpa-llm-bridge/
 │  └─ yingdao_mcp_server.py  反向 MCP：RPA 应用作为工具
 ├─ sdk/rpa_agent_block.py    影刀代码块单文件 SDK（3.8+）
 ├─ scripts/                  export_mcp_config.py / install_windows.ps1 / make_assets.py
-├─ examples/local_demo.py    无 key 端到端演示
-├─ tests/                    94 个用例（内核 43 + 桥 51）
+├─ examples/                 local_demo.py（RPA 调智能体）/ reverse_demo.py（智能体调 RPA）
+│                            mock_yingdao_server.py（没有影刀环境时的假开放 API）
+├─ tests/                    99 个用例（内核 43 + 桥 51 + 反方向 5）
 └─ docs/                     USAGE.md / PLATFORMS.md / BRIDGE_DESIGN.md / DESIGN.md / HANDOFF.md
 ```
 
