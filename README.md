@@ -16,6 +16,8 @@
 
 ## 架构
 
+![双向桥架构](docs/assets/v2-architecture.png)
+
 ```
 方向 A：智能体 → 电脑（v0.1）
   Codex / Claude / Cursor ──MCP──▶ 浏览器(Playwright) · Windows 桌面(pywinauto) · Office(openpyxl/docx)
@@ -47,6 +49,8 @@
 | 审计与指标 | jsonl（prompt 指纹 + 前 200 字符 + 密钥正则脱敏）、Prometheus 文本指标 |
 
 ### v2.1 新增：企业护栏
+
+![企业护栏](docs/assets/v21-guardrails.png)
 
 反向触发 RPA 属于对内部系统的写操作，比模型调用更需要按"应用"维度管：
 
