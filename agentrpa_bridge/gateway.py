@@ -157,6 +157,7 @@ class GatewayState:
         self.semaphore = threading.BoundedSemaphore(max(1, config.max_concurrency))
         self.jobs = {}
         self._jobs_lock = threading.Lock()
+        self._job_cond = threading.Condition(self._jobs_lock)
 
     # ---- 幂等（交给 store，可跨进程）----
     def idem_begin(self, key: tuple) -> tuple[str, dict | None]:
@@ -173,7 +174,9 @@ class GatewayState:
         run_id = uuid.uuid4().hex[:16]
         with self._jobs_lock:
             self.jobs[run_id] = {"run_id": run_id, "status": "queued",
-                                 "created": time.time(), "result": None, "error": None}
+                                 "created": time.time(), "result": None, "error": None,
+                                 "seq": 0, "events": [], "done": False}
+            self.job_emit_locked(run_id, {"stage": "queued"})
             self._gc_jobs()
         return run_id
 
@@ -185,13 +188,48 @@ class GatewayState:
 
     def set_job(self, run_id: str, **fields):
         with self._jobs_lock:
-            if run_id in self.jobs:
-                self.jobs[run_id].update(fields)
+            job = self.jobs.get(run_id)
+            if not job:
+                return
+            job.update(fields)
+            if fields.get("status") in ("succeeded", "failed", "cancelled"):
+                job["done"] = True
+                self.job_emit_locked(run_id, {"stage": job["status"]})
+            self._job_cond.notify_all()   # Condition 必须在持锁时 notify
 
     def get_job(self, run_id: str):
         with self._jobs_lock:
             job = self.jobs.get(run_id)
             return dict(job) if job else None
+
+    # ---- 作业事件（SSE 用）----
+    def job_emit(self, run_id: str, event: dict):
+        with self._jobs_lock:
+            self.job_emit_locked(run_id, dict(event))
+            self._job_cond.notify_all()
+
+    def job_emit_locked(self, run_id: str, event: dict):
+        """必须在持有 _jobs_lock 时调用（new_job / set_job 内部用）。"""
+        job = self.jobs.get(run_id)
+        if not job:
+            return
+        job["seq"] += 1
+        event = {**event, "seq": job["seq"], "ts": time.time()}
+        job["events"].append(event)
+        if len(job["events"]) > 200:          # 只留最近 200 条，防长任务撑爆内存
+            del job["events"][:-200]
+
+    def job_events(self, run_id: str, after: int, timeout: float = 10.0):
+        """等到有新事件或作业结束，返回 (事件列表, 是否结束)。"""
+        with self._job_cond:
+            job = self.jobs.get(run_id)
+            if not job:
+                return [], True
+            if job["seq"] <= after and not job["done"]:
+                self._job_cond.wait(timeout)
+            job = self.jobs.get(run_id) or {}
+            events = [e for e in job.get("events", []) if e["seq"] > after]
+            return events, bool(job.get("done"))
 
     def close(self):
         try:
@@ -303,6 +341,21 @@ def _make_handler(state: GatewayState):
             if path == "/v1/agents":
                 self._send(200, {"agents": [state.pool.specs[n].public() for n in state.pool.names()],
                                  "sessions": state.pool.snapshot()})
+            elif path.startswith("/v1/jobs/") and path.endswith("/events"):
+                run_id = path.split("/")[-2]
+                query = self.path.partition("?")[2]
+                after = 0
+                for pair in query.split("&"):
+                    if pair.startswith("since="):
+                        try:
+                            after = int(pair[6:])
+                        except ValueError:
+                            after = 0
+                try:
+                    after = max(after, int(self.headers.get("Last-Event-ID") or 0))
+                except ValueError:
+                    pass
+                self._stream_job(run_id, after)
             elif path.startswith("/v1/jobs/"):
                 job = state.get_job(path.rsplit("/", 1)[-1])
                 if not job:
@@ -315,6 +368,41 @@ def _make_handler(state: GatewayState):
                     ctype="text/plain")
             else:
                 self._send(404, {"error": "not found"})
+
+        def _sse(self, event: str, data: dict):
+            payload = (f"id: {data.get('seq', 0)}\n"
+                       f"event: {event}\n"
+                       f"data: {json.dumps(data, ensure_ascii=False)}\n\n")
+            self.wfile.write(payload.encode("utf-8"))
+            self.wfile.flush()
+
+        def _stream_job(self, run_id: str, after: int):
+            """把作业事件按 SSE 推给客户端；支持 Last-Event-ID / since 续传。"""
+            job = state.get_job(run_id)
+            if not job:
+                self._send(404, {"error": "job not found"})
+                return
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+            self.send_header("Cache-Control", "no-cache")
+            self.send_header("X-Accel-Buffering", "no")
+            self.send_header("Connection", "close")
+            self.end_headers()
+            self.close_connection = True
+            last = after
+            try:
+                while True:
+                    events, done = state.job_events(run_id, last, timeout=10.0)
+                    for event in events:
+                        last = event["seq"]
+                        self._sse("progress", event)
+                    if done and not events:
+                        self._sse("end", {"seq": last})
+                        return
+                    if not events and not done:
+                        self._sse("ping", {"seq": last})   # 心跳，防代理断连
+            except (BrokenPipeError, ConnectionResetError, OSError):
+                return
 
         # ---- POST ----
         def do_POST(self):
@@ -407,8 +495,12 @@ def _invoke_once(state: GatewayState, request_id: str, agent: str, prompt: str,
     state.metrics.active += 1
     started = time.time()
     try:
+        emit = (lambda event: state.job_emit(job_id, event)) if job_id else None
+        if emit:
+            emit({"stage": "running", "agent": agent})
         result = state.pool.invoke(agent, prompt, cwd=cwd, meta=meta,
-                                   timeout=float(timeout) if timeout else None)
+                                   timeout=float(timeout) if timeout else None,
+                                   on_event=emit)
         state.metrics.observe(agent, result["duration_ms"])
         state.metrics.inc("invoke_ok_total")
         payload = {"run_id": job_id, "status": "succeeded", "agent": result["agent"],

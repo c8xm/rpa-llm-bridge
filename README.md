@@ -6,7 +6,7 @@
 - **v2.0 桥（`agentrpa_bridge`）**：影刀 / UiPath / Power Automate 反过来调用 Codex / Claude / DeepSeek Harness / 豆包，凭证托管、进程复用、并发闸门、限速、审计、指标；同时把影刀应用注册成 MCP 工具给智能体调用。
 
 [![CI](https://github.com/c8xm/rpa-llm-bridge/actions/workflows/ci.yml/badge.svg)](https://github.com/c8xm/rpa-llm-bridge/actions/workflows/ci.yml)
-![version](https://img.shields.io/badge/version-2.4.0-blue)
+![version](https://img.shields.io/badge/version-2.5.0-blue)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 ![python](https://img.shields.io/badge/python-3.11%20%7C%203.12-blue)
 
@@ -108,6 +108,26 @@ $env:AGENTRPA_STATE_PATH    = "D:\bridge\state.db"
 
 两个网关共用一个库时，同一个 `Idempotency-Key` 只会跑一次 agent（有用例锁死）。
 
+### v2.5 新增：SSE 进度流
+
+长任务不再只有一个「转圈」：
+
+```powershell
+curl -N "http://127.0.0.1:8765/v1/jobs/$run_id/events" -H "Authorization: Bearer tok-a"
+```
+
+```text
+event: progress
+data: {"stage": "tool_call", "name": "read_file", "seq": 3}
+```
+
+| 能力 | 说明 |
+|---|---|
+| 事件流 | `GET /v1/jobs/{id}/events`，`queued → running → text → tool_call → final → succeeded` |
+| 断点续传 | `Last-Event-ID` 头或 `?since=N`，重连不重复、不丢 |
+| 真实事件 | CLI 参数带 `--json`（如 `dsh headless --json -`）时逐行解析；MCP 后端给两个生命周期节点 |
+| 影刀侧 | `ab.ask_agent_stream(prompt, on_event=...)`，回调里写变量 |
+
 ## 快速开始
 
 ### 只跑桥（零第三方依赖）
@@ -179,7 +199,7 @@ rpa-llm-bridge/
 ├─ scripts/                  export_mcp_config.py / install_windows.ps1 / make_assets.py
 ├─ examples/                 local_demo.py（RPA 调智能体）/ reverse_demo.py（智能体调 RPA）
 │                            mock_yingdao_server.py（没有影刀环境时的假开放 API）
-├─ tests/                    138 个用例（内核 43 + 桥 51 + 反方向 5 + 护栏 11 + 加固 10 + 幂等/转义 11 + 共享状态 7）
+├─ tests/                    143 个用例（内核 43 + 桥 51 + 反方向 5 + 护栏 11 + 加固 10 + 幂等/转义 11 + 共享状态 7 + 进度流 5）
 └─ docs/                     USAGE.md / ENTERPRISE-ADOPTION.md / PLATFORMS.md / BRIDGE_DESIGN.md / DESIGN.md
 ```
 

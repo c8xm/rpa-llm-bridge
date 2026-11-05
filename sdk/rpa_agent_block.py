@@ -202,6 +202,63 @@ def ask_agent_async(prompt, callback=None, agent="codex", timeout=180, meta=None
     return thread
 
 
+# --------------------------------------------------------------------------
+# 进度流（SSE）：长任务时让影刀界面能显示"第几步"
+# --------------------------------------------------------------------------
+def ask_agent_stream(prompt, on_event=None, agent="codex", timeout=600, meta=None,
+                     gateway=None, token=None):
+    """提交异步任务并读取 SSE 进度，返回最终文本。
+
+    on_event(dict) 会依次收到 {"stage": "queued|running|text|tool_call|final|...", "seq": n}
+    只支持网关模式（本地 stdio 没有事件流）。
+    """
+    gateway = (gateway or os.environ.get("AGENTRPA_GATEWAY", "")).rstrip("/")
+    token = token or os.environ.get("AGENTRPA_TOKEN", "")
+    if not gateway:
+        raise RuntimeError("ask_agent_stream 需要 AGENTRPA_GATEWAY")
+
+    body = json.dumps({"agent": agent, "prompt": prompt, "timeout_s": timeout,
+                       "meta": meta or {}}, ensure_ascii=False).encode("utf-8")
+    req = urllib.request.Request(gateway + "/v1/jobs", data=body, method="POST",
+                                 headers={"Content-Type": "application/json",
+                                          "Authorization": "Bearer " + token})
+    with urllib.request.urlopen(req, timeout=30) as resp:
+        run_id = json.loads(resp.read().decode("utf-8", "replace"))["run_id"]
+
+    url = "%s/v1/jobs/%s/events" % (gateway, run_id)
+    stream_req = urllib.request.Request(url, headers={"Authorization": "Bearer " + token})
+    try:
+        with urllib.request.urlopen(stream_req, timeout=timeout + 30) as resp:
+            for raw in resp:
+                line = raw.decode("utf-8", "replace").rstrip("\r\n")
+                if not line.startswith("data: "):
+                    if line.startswith("event: end"):
+                        break
+                    continue
+                try:
+                    event = json.loads(line[6:])
+                except ValueError:
+                    continue
+                if on_event:
+                    on_event(event)
+    except (urllib.error.URLError, OSError):
+        pass  # 流断了还能用下面的轮询兜底
+
+    # 取最终结果（流里只带进度，不带正文）
+    for _ in range(int(timeout) + 10):
+        poll = urllib.request.Request("%s/v1/jobs/%s" % (gateway, run_id),
+                                      headers={"Authorization": "Bearer " + token})
+        with urllib.request.urlopen(poll, timeout=30) as resp:
+            job = json.loads(resp.read().decode("utf-8", "replace"))
+        if job.get("status") in ("succeeded", "failed"):
+            result = job.get("result") or {}
+            if job["status"] == "failed":
+                raise RuntimeError(job.get("error") or "任务失败")
+            return result.get("text", "")
+        time.sleep(1)
+    raise RuntimeError("任务 %s 等待超时" % run_id)
+
+
 if __name__ == "__main__":
     # 影刀调试用：python rpa_agent_block.py "你的问题"
     question = " ".join(sys.argv[1:]) or "用一句话说明什么是 RPA"

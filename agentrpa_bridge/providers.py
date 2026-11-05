@@ -93,7 +93,8 @@ class BaseProvider:
     spec: AgentSpec
 
     def invoke(self, prompt: str, cwd: str | None = None,
-               meta: dict | None = None, timeout: float | None = None) -> dict:
+               meta: dict | None = None, timeout: float | None = None,
+               on_event=None) -> dict:
         raise NotImplementedError
 
     def close(self):
@@ -154,13 +155,18 @@ class McpAgentProvider(BaseProvider):
         return names[0] if names else ""
 
     def invoke(self, prompt: str, cwd: str | None = None,
-               meta: dict | None = None, timeout: float | None = None) -> dict:
+               meta: dict | None = None, timeout: float | None = None,
+               on_event=None) -> dict:
         timeout = timeout or self.spec.timeout
         started = time.monotonic()
+        if on_event:
+            on_event({"stage": "waiting_backend", "agent": self.spec.name})
         # 锁等待必须受调用方预算约束：否则慢请求会把并发池占满，503 也回不去
         if not self._lock.acquire(timeout=timeout):
             raise AgentError(f"[{self.spec.name}] busy：会话被占用超过 {timeout}s")
         try:
+            if on_event:
+                on_event({"stage": "backend_started", "agent": self.spec.name})
             last_err = None
             for attempt in (1, 2):
                 try:
@@ -212,13 +218,19 @@ class McpAgentProvider(BaseProvider):
 
 
 class CliProvider(BaseProvider):
-    """一次性 CLI 调用：codex exec / claude -p / 自研脚本。"""
+    """一次性 CLI 调用：codex exec / claude -p / dsh headless / 自研脚本。
+
+    参数里带 `--json`（如 `dsh headless --json -`）时自动按行解析事件流，
+    通过 on_event 回调把进度抛给调用方；否则只发一条 backend_running。
+    """
 
     def __init__(self, spec: AgentSpec):
         self.spec = spec
+        self.streams = any("--json" in a for a in spec.args)
 
     def invoke(self, prompt: str, cwd: str | None = None,
-               meta: dict | None = None, timeout: float | None = None) -> dict:
+               meta: dict | None = None, timeout: float | None = None,
+               on_event=None) -> dict:
         timeout = timeout or self.spec.timeout
         ctx = {"prompt": prompt, "cwd": cwd or self.spec.cwd or os.getcwd(),
                "model": self.spec.model}
@@ -227,6 +239,11 @@ class CliProvider(BaseProvider):
         env = os.environ.copy()
         env.update({k: str(v) for k, v in self.spec.env.items()})
         started = time.monotonic()
+        if on_event and self.streams:
+            return self._invoke_stream(prompt, argv, use_stdin, env, cwd, timeout,
+                                       meta, started, on_event)
+        if on_event:
+            on_event({"stage": "backend_running", "agent": self.spec.name})
         try:
             proc = subprocess.run(
                 argv_for(self.spec.command, argv), input=prompt if use_stdin else None,
@@ -243,6 +260,70 @@ class CliProvider(BaseProvider):
         return {"agent": self.spec.name, "text": text, "is_error": False,
                 "duration_ms": int((time.monotonic() - started) * 1000),
                 "raw": {"returncode": proc.returncode}, "meta": meta or {}}
+
+    def _invoke_stream(self, prompt, argv, use_stdin, env, cwd, timeout,
+                       meta, started, on_event) -> dict:
+        """逐行读 `--json` 事件流，转发进度，结束时取 final 文本。"""
+        cmd = argv_for(self.spec.command, argv)
+        try:
+            proc = subprocess.Popen(
+                cmd, stdin=subprocess.PIPE if use_stdin else None,
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                text=True, encoding="utf-8", errors="replace",
+                cwd=cwd or self.spec.cwd, env=env)
+        except OSError as exc:
+            raise AgentError(f"[{self.spec.name}] CLI 启动失败：{exc}") from exc
+
+        final_text = ""
+        deadline = time.monotonic() + timeout
+        try:
+            if use_stdin and proc.stdin:
+                proc.stdin.write(prompt)
+                proc.stdin.close()
+            for line in proc.stdout:
+                if time.monotonic() > deadline:
+                    proc.kill()
+                    raise AgentError(f"[{self.spec.name}] CLI 超时 {timeout}s")
+                line = (line or "").strip()
+                if not line:
+                    continue
+                try:
+                    event = json.loads(line)
+                except json.JSONDecodeError:
+                    on_event({"stage": "text", "text": redact(line)[:500]})
+                    continue
+                kind = str(event.get("type") or event.get("event") or "event")
+                payload = {"stage": kind}
+                for key in ("text", "tool", "name", "status", "message"):
+                    if isinstance(event.get(key), str):
+                        payload[key] = redact(event[key])[:500]
+                on_event(payload)
+                if kind == "final":
+                    final_text = event.get("text") or final_text
+                elif kind == "text" and isinstance(event.get("text"), str):
+                    final_text = event["text"]
+            proc.wait(timeout=max(1.0, deadline - time.monotonic()))
+        except subprocess.TimeoutExpired as exc:
+            proc.kill()
+            raise AgentError(f"[{self.spec.name}] CLI 超时 {timeout}s") from exc
+        finally:
+            for stream in (proc.stdout, proc.stderr, proc.stdin):
+                try:
+                    if stream:
+                        stream.close()
+                except Exception:
+                    pass
+        if proc.returncode not in (0, None):
+            err = ""
+            try:
+                err = (proc.stderr.read() or "")[-300:] if proc.stderr else ""
+            except Exception:
+                pass
+            raise AgentError(f"[{self.spec.name}] CLI 退出码 {proc.returncode}：{redact(err)}")
+        return {"agent": self.spec.name, "text": final_text, "is_error": False,
+                "duration_ms": int((time.monotonic() - started) * 1000),
+                "raw": {"returncode": proc.returncode, "streamed": True},
+                "meta": meta or {}}
 
     @staticmethod
     def _extract(stdout: str) -> str:
@@ -275,8 +356,11 @@ class OpenAICompatProvider(BaseProvider):
         self.model = spec.model or os.environ.get("AGENTRPA_OPENAI_MODEL", "")
 
     def invoke(self, prompt: str, cwd: str | None = None,
-               meta: dict | None = None, timeout: float | None = None) -> dict:
+               meta: dict | None = None, timeout: float | None = None,
+               on_event=None) -> dict:
         timeout = timeout or self.spec.timeout
+        if on_event:
+            on_event({"stage": "waiting_backend", "agent": self.spec.name})
         if not self.api_key:
             raise AgentError(f"[{self.spec.name}] 缺少 API key"
                              f"（spec.api_key 或对应环境变量）")
@@ -342,11 +426,13 @@ class AgentPool:
         return [self.providers[n].health() for n in self.names()]
 
     def invoke(self, name: str, prompt: str, cwd: str | None = None,
-               meta: dict | None = None, timeout: float | None = None) -> dict:
+               meta: dict | None = None, timeout: float | None = None,
+               on_event=None) -> dict:
         provider = self.providers.get(name)
         if not provider:
             raise AgentError(f"未知 agent：{name}（可用：{', '.join(self.names())}）")
-        result = provider.invoke(prompt, cwd=cwd, meta=meta, timeout=timeout)
+        result = provider.invoke(prompt, cwd=cwd, meta=meta, timeout=timeout,
+                                 on_event=on_event)
         self._last_used[name] = time.monotonic()
         return result
 

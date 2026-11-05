@@ -1,4 +1,4 @@
-# 使用说明 · rpa-llm-bridge v2.4
+# 使用说明 · rpa-llm-bridge v2.5
 
 > 这份文档是操作手册，不是概念介绍。每一节都能直接照抄执行。
 > 概念与取舍见 [DESIGN.md](DESIGN.md)（v0.1 内核）与 [BRIDGE_DESIGN.md](BRIDGE_DESIGN.md)（v2.0 桥）；
@@ -90,7 +90,7 @@ python examples\local_demo.py
 ### 2.4 验证安装
 
 ```powershell
-python -m pytest                          # 138 passed（未装 openpyxl 时 132 passed, 1 skipped）
+python -m pytest                          # 143 passed（未装 openpyxl 时 137 passed, 1 skipped）
 python server.py --help 2>$null; echo $LASTEXITCODE   # v0.1 MCP 入口可加载
 python agentrpa_bridge\yingdao_mcp_server.py --selftest
 ```
@@ -279,6 +279,33 @@ curl -s http://127.0.0.1:8765/metrics   -H "Authorization: Bearer tok-a" # Prome
 
 ---
 
+### 5.6 进度流 `GET /v1/jobs/{id}/events`（SSE）
+
+长任务别再干等：提交异步任务后订阅事件流，能看到 `queued → running → text → tool_call → final → succeeded`。
+
+```powershell
+$r = curl -s -X POST http://127.0.0.1:8765/v1/jobs `
+  -H "Authorization: Bearer tok-a" -H "Content-Type: application/json" `
+  -d '{"agent":"dsh","prompt":"核对这几个月的对账单"}' | ConvertFrom-Json
+curl -N "http://127.0.0.1:8765/v1/jobs/$($r.run_id)/events" -H "Authorization: Bearer tok-a"
+```
+
+```text
+id: 1
+event: progress
+data: {"stage": "queued", "seq": 1, ...}
+
+id: 3
+event: progress
+data: {"stage": "tool_call", "name": "read_file", "seq": 3, ...}
+```
+
+- 断线重连带 `Last-Event-ID`（或 `?since=N`）即可续传，不重复、不丢。
+- 事件只保留最近 200 条；`text` 字段经过脱敏。
+- 真事件来源：CLI 后端参数里带 `--json`（如 `dsh headless --json -`）时逐行解析；
+  MCP / HTTP 后端只有 `waiting_backend` / `backend_started` 两个节点。
+- 影刀侧用 SDK 的 `ask_agent_stream(prompt, on_event=...)`，回调里写变量即可。
+
 ## 6. 接后端：Codex / Claude / dsh / 豆包 / 自研
 
 ### 6.1 Codex（推荐的默认后端）
@@ -392,6 +419,8 @@ def main(发票号, 价税合计):
 - 返回值是字符串；提示词里写死输出格式（"只返回数字"），比让模型自由发挥稳一个数量级。
 - **不要把整张表塞进 prompt**：落盘 + 递路径 + 递统计量。
 - 长任务用 `ab.ask_agent_async(prompt, callback=...)`，回调里只写一个中间变量，主流程用"等待条件"轮询它。
+- 想看进度（"第几步了"）用 `ab.ask_agent_stream(prompt, on_event=..., agent="dsh")`，
+  事件形如 `{"stage": "tool_call", "name": "read_file", "seq": 3}`。
 
 ### 7.2 影刀 · HTTP 请求指令
 
@@ -658,7 +687,7 @@ $env:AGENTRPA_STATE_PATH    = "D:\bridge\state.db"   # 两个节点指向同一�
 ## 13. 开发与测试
 
 ```powershell
-python -m pytest                                   # 全部 138 个用例
+python -m pytest                                   # 全部 143 个用例
 python -m pytest tests/test_gateway.py -v          # 单文件
 python -m unittest tests.test_gateway              # 桥的部分不需要 pytest
 ruff check agentrpa agentrpa_bridge server.py tests --select E9,F63,F7,F82
@@ -673,7 +702,7 @@ agentrpa/                  v0.1 内核：core / drivers / recipes
 agentrpa_bridge/           v2.0 桥：mcp_client / providers / gateway / yingdao_*
 sdk/rpa_agent_block.py     影刀代码块单文件 SDK
 scripts/                   export_mcp_config.py / install_windows.ps1 / make_assets.py
-tests/                     138 个用例（内核 43 + 桥 51 + 反方向 5 + 护栏 11 + 加固 10 + 幂等/转义 11 + 共享状态 7）
+tests/                     143 个用例（内核 43 + 桥 51 + 反方向 5 + 护栏 11 + 加固 10 + 幂等/转义 11 + 共享状态 7 + 进度流 5）
 examples/local_demo.py     无 key 端到端演示
 ```
 
