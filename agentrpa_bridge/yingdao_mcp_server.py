@@ -166,7 +166,7 @@ def _text_result(text: str, is_error: bool = False) -> dict:
     return {"content": [{"type": "text", "text": text}], "isError": is_error}
 
 
-def serve(tools: RpaTools):
+def serve(tools: RpaTools):  # pragma: no cover  (stdio 主循环，由子进程测试覆盖)
     for line in sys.stdin:
         line = line.strip()
         if not line:
@@ -206,7 +206,7 @@ def serve(tools: RpaTools):
             _reply(rid, error={"code": -32601, "message": f"不支持的方法：{method}"})
 
 
-def main():
+def main():  # pragma: no cover
     if "--selftest" in sys.argv:
         tools = RpaTools()
         print(json.dumps({"tools": [t["name"] for t in tools.tools()],

@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "rpa-llm-bridge"
-version = "2.5.0"
+version = "2.6.0"
 description = "企业 RPA 与智能体之间的双向桥：MCP 工具层 + 声明式 Recipe + 策略闸门（v0.1 内核），以及 RPA ↔ Codex/Claude/dsh/豆包 的网关与 SDK（v2.0）"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -55,6 +55,16 @@ testpaths = ["tests"]
 addopts = "-q"
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
+
+[tool.coverage.run]
+source = ["agentrpa", "agentrpa_bridge"]
+# 驱动层要真实浏览器/桌面/Office，CI 里跑不起来；它们的逻辑靠 fake driver 与策略用例覆盖
+omit = ["agentrpa/drivers/*"]
+
+[tool.coverage.report]
+skip_covered = true
+# 当前基线 82%（Linux）；跨平台会有 1–2 点波动，门槛留余量
+fail_under = 78
 
 [tool.ruff]
 line-length = 112

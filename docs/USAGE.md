@@ -1,4 +1,4 @@
-# 使用说明 · rpa-llm-bridge v2.5
+# 使用说明 · rpa-llm-bridge v2.6
 
 > 这份文档是操作手册，不是概念介绍。每一节都能直接照抄执行。
 > 概念与取舍见 [DESIGN.md](DESIGN.md)（v0.1 内核）与 [BRIDGE_DESIGN.md](BRIDGE_DESIGN.md)（v2.0 桥）；
@@ -90,7 +90,7 @@ python examples\local_demo.py
 ### 2.4 验证安装
 
 ```powershell
-python -m pytest                          # 143 passed（未装 openpyxl 时 137 passed, 1 skipped）
+python -m pytest                          # 150 passed（未装 openpyxl 时 144 passed, 1 skipped）
 python server.py --help 2>$null; echo $LASTEXITCODE   # v0.1 MCP 入口可加载
 python agentrpa_bridge\yingdao_mcp_server.py --selftest
 ```
@@ -687,7 +687,8 @@ $env:AGENTRPA_STATE_PATH    = "D:\bridge\state.db"   # 两个节点指向同一�
 ## 13. 开发与测试
 
 ```powershell
-python -m pytest                                   # 全部 143 个用例
+python -m pytest                                   # 全部 150 个用例
+python -m pytest --cov --cov-report=term            # 覆盖率（门槛 78%，当前 82%）
 python -m pytest tests/test_gateway.py -v          # 单文件
 python -m unittest tests.test_gateway              # 桥的部分不需要 pytest
 ruff check agentrpa agentrpa_bridge server.py tests --select E9,F63,F7,F82
@@ -702,9 +703,12 @@ agentrpa/                  v0.1 内核：core / drivers / recipes
 agentrpa_bridge/           v2.0 桥：mcp_client / providers / gateway / yingdao_*
 sdk/rpa_agent_block.py     影刀代码块单文件 SDK
 scripts/                   export_mcp_config.py / install_windows.ps1 / make_assets.py
-tests/                     143 个用例（内核 43 + 桥 51 + 反方向 5 + 护栏 11 + 加固 10 + 幂等/转义 11 + 共享状态 7 + 进度流 5）
+tests/                     150 个用例（内核 43 + 桥 51 + 反方向 5 + 护栏 11 + 加固 10 + 幂等/转义 11 + 共享状态 7 + 进度流 5 + MCP 单测 7）
 examples/local_demo.py     无 key 端到端演示
 ```
+
+覆盖率配置在 `pyproject.toml`：`source = agentrpa + agentrpa_bridge`，
+`omit = agentrpa/drivers/*`（要真浏览器/桌面，CI 跑不了），门槛 `fail_under = 78`。
 
 新增一个后端 = 实现 `BaseProvider.invoke()` 并在 `default_specs()` 里登记，网关与 RPA 侧零改动。
 新增一个 RPA 平台 = 仿 `yingdao_mcp_server.py` 写一个 MCP 服务，或直接让该平台打 `/v1/invoke`。

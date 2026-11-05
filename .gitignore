@@ -30,3 +30,8 @@ tests/_artifacts/
 Thumbs.db
 .DS_Store
 *.log
+
+# 覆盖率产物
+.coverage
+coverage.xml
+htmlcov/

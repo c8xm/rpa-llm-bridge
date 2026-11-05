@@ -2,6 +2,8 @@
 
 > 发布日期：2026-11-05 · 上一个版本：[v2.4.0](https://github.com/c8xm/rpa-llm-bridge/releases/tag/v2.4.0)
 
+![SSE 进度流](https://raw.githubusercontent.com/c8xm/rpa-llm-bridge/main/docs/assets/v25-sse-flow.png)
+
 到 v2.4 为止，影刀点完「运行」只会看到转圈，直到最后拿到一段文本。v2.5 让它能看见进度：**作业级事件流 + SSE 端点 + 断点续传**，并把 `dsh --json` 的真实事件接进来。
 
 ---
