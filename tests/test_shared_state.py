@@ -41,7 +41,7 @@ class StoreSelectionTest(unittest.TestCase):
 
     def test_unknown_backend(self):
         with self.assertRaises(ValueError):
-            make_store("redis", "x", 60)
+            make_store("nope", "x", 60)
 
 
 class SQLiteRateLimitTest(unittest.TestCase):

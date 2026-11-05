@@ -1,4 +1,4 @@
-# 使用说明 · rpa-llm-bridge v2.6
+# 使用说明 · rpa-llm-bridge v2.7
 
 > 这份文档是操作手册，不是概念介绍。每一节都能直接照抄执行。
 > 概念与取舍见 [DESIGN.md](DESIGN.md)（v0.1 内核）与 [BRIDGE_DESIGN.md](BRIDGE_DESIGN.md)（v2.0 桥）；
@@ -90,7 +90,7 @@ python examples\local_demo.py
 ### 2.4 验证安装
 
 ```powershell
-python -m pytest                          # 150 passed（未装 openpyxl 时 144 passed, 1 skipped）
+python -m pytest                          # 160 passed（未装 openpyxl 时 154 passed, 1 skipped）
 python server.py --help 2>$null; echo $LASTEXITCODE   # v0.1 MCP 入口可加载
 python agentrpa_bridge\yingdao_mcp_server.py --selftest
 ```
@@ -148,8 +148,9 @@ agentrpa_agent_avg_ms{agent="codex"} 70
 | `AGENTRPA_AUDIT_DIR` | `artifacts/audit` | 审计目录 |
 | `AGENTRPA_JOB_TTL` | `3600` | 异步任务记录保留（秒） |
 | `AGENTRPA_IDEMPOTENCY_TTL` | `900` | `Idempotency-Key` 结果缓存时长（秒），0 = 关闭 |
-| `AGENTRPA_STATE_BACKEND` | `memory` | 限速与幂等的后端：`memory`（单机）/ `sqlite`（跨进程） |
+| `AGENTRPA_STATE_BACKEND` | `memory` | 状态后端：`memory`（单机）/ `sqlite`（跨进程）/ `redis`（跨机） |
 | `AGENTRPA_STATE_PATH` | `artifacts/bridge-state.db` | SQLite 库路径；放共享盘可跨机 |
+| `AGENTRPA_REDIS_URL` | `redis://127.0.0.1:6379/0` | `backend=redis` 时的连接串（支持 `rediss://`） |
 
 ### 4.2 后端
 
@@ -637,9 +638,17 @@ $env:AGENTRPA_STATE_PATH    = "D:\bridge\state.db"   # 两个节点指向同一�
 |---|---|---|
 | `memory` | 单进程 / PoC | 零依赖，重启即清空 |
 | `sqlite` | 同机多进程、共享盘 | WAL + `BEGIN IMMEDIATE`，跨进程计数与幂等一致 |
-| Redis | 多机（未内置） | 实现 `store.py` 里同样的 4 个方法即可替换 |
+| `redis` | 多机集群 | 固定窗口限速（INCR+PEXPIRE）、`SET NX PX` 幂等、List 存事件 |
 
-跨机用共享盘放 SQLite 属「能用但别硬扛」：网络文件系统的锁语义有差异，量大时换 Redis。
+跨机用共享盘放 SQLite 属「能用但别硬扛」：网络文件系统的锁语义有差异，量大时换 Redis：
+
+```powershell
+$env:AGENTRPA_STATE_BACKEND = "redis"
+$env:AGENTRPA_REDIS_URL     = "redis://10.0.0.9:6379/0"
+```
+
+**作业事件持久化**：`sqlite` / `redis` 会把 SSE 事件落盘，进程重启后 `GET /v1/jobs/{id}/events`
+仍能全量回放，`GET /v1/jobs/{id}` 返回 `status: recovered`；`memory` 重启后是 404（刻意边界）。
 
 ### 10.5 灰度与回滚
 
@@ -687,7 +696,7 @@ $env:AGENTRPA_STATE_PATH    = "D:\bridge\state.db"   # 两个节点指向同一�
 ## 13. 开发与测试
 
 ```powershell
-python -m pytest                                   # 全部 150 个用例
+python -m pytest                                   # 全部 160 个用例
 python -m pytest --cov --cov-report=term            # 覆盖率（门槛 78%，当前 82%）
 python -m pytest tests/test_gateway.py -v          # 单文件
 python -m unittest tests.test_gateway              # 桥的部分不需要 pytest
@@ -703,7 +712,7 @@ agentrpa/                  v0.1 内核：core / drivers / recipes
 agentrpa_bridge/           v2.0 桥：mcp_client / providers / gateway / yingdao_*
 sdk/rpa_agent_block.py     影刀代码块单文件 SDK
 scripts/                   export_mcp_config.py / install_windows.ps1 / make_assets.py
-tests/                     150 个用例（内核 43 + 桥 51 + 反方向 5 + 护栏 11 + 加固 10 + 幂等/转义 11 + 共享状态 7 + 进度流 5 + MCP 单测 7）
+tests/                     160 个用例（内核 43 + 桥 51 + 反方向 5 + 护栏 11 + 加固 10 + 幂等/转义 11 + 共享状态 7 + 进度流 5 + MCP 单测 7 + Redis/持久化 10）
 examples/local_demo.py     无 key 端到端演示
 ```
 

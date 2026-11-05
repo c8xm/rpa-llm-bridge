@@ -59,6 +59,7 @@ class GatewayConfig:
     idempotency_ttl: float = 900.0
     state_backend: str = "memory"                     # memory | sqlite
     state_path: str = "artifacts/bridge-state.db"
+    state_url: str = "redis://127.0.0.1:6379/0"        # 仅 backend=redis 时使用
 
     @classmethod
     def from_env(cls) -> "GatewayConfig":
@@ -81,6 +82,7 @@ class GatewayConfig:
             idempotency_ttl=float(os.environ.get("AGENTRPA_IDEMPOTENCY_TTL", "900")),
             state_backend=os.environ.get("AGENTRPA_STATE_BACKEND", "memory"),
             state_path=os.environ.get("AGENTRPA_STATE_PATH", "artifacts/bridge-state.db"),
+            state_url=os.environ.get("AGENTRPA_REDIS_URL", "redis://127.0.0.1:6379/0"),
         )
 
 
@@ -153,7 +155,7 @@ class GatewayState:
         self.audit = AuditLog(config.audit_dir)
         self.metrics = Metrics()
         self.store = make_store(config.state_backend, config.state_path,
-                                config.idempotency_ttl)
+                                config.idempotency_ttl, config.state_url)
         self.semaphore = threading.BoundedSemaphore(max(1, config.max_concurrency))
         self.jobs = {}
         self._jobs_lock = threading.Lock()
@@ -176,8 +178,9 @@ class GatewayState:
             self.jobs[run_id] = {"run_id": run_id, "status": "queued",
                                  "created": time.time(), "result": None, "error": None,
                                  "seq": 0, "events": [], "done": False}
-            self.job_emit_locked(run_id, {"stage": "queued"})
+            event = self.job_emit_locked(run_id, {"stage": "queued"})
             self._gc_jobs()
+        self._persist(run_id, event)
         return run_id
 
     def _gc_jobs(self):
@@ -187,6 +190,7 @@ class GatewayState:
             self.jobs.pop(rid, None)
 
     def set_job(self, run_id: str, **fields):
+        event = None
         with self._jobs_lock:
             job = self.jobs.get(run_id)
             if not job:
@@ -194,37 +198,54 @@ class GatewayState:
             job.update(fields)
             if fields.get("status") in ("succeeded", "failed", "cancelled"):
                 job["done"] = True
-                self.job_emit_locked(run_id, {"stage": job["status"]})
+                event = self.job_emit_locked(run_id, {"stage": job["status"]})
             self._job_cond.notify_all()   # Condition 必须在持锁时 notify
+        self._persist(run_id, event)
 
     def get_job(self, run_id: str):
         with self._jobs_lock:
             job = self.jobs.get(run_id)
-            return dict(job) if job else None
+            if job:
+                return dict(job)
+        events, done = self.store.job_read(run_id, 0)
+        if not events:
+            return None
+        return {"run_id": run_id, "status": "recovered", "persisted": True,
+                "seq": events[-1].get("seq", 0), "events": events, "done": done}
 
     # ---- 作业事件（SSE 用）----
     def job_emit(self, run_id: str, event: dict):
         with self._jobs_lock:
-            self.job_emit_locked(run_id, dict(event))
+            stored = self.job_emit_locked(run_id, dict(event))
             self._job_cond.notify_all()
+        self._persist(run_id, stored)
+
+    def _persist(self, run_id: str, event: dict | None):
+        if not event:
+            return
+        try:
+            self.store.job_append(run_id, event)
+        except Exception:                     # 持久化失败不该拖垮调用链
+            self.metrics.inc("job_persist_errors_total")
 
     def job_emit_locked(self, run_id: str, event: dict):
         """必须在持有 _jobs_lock 时调用（new_job / set_job 内部用）。"""
         job = self.jobs.get(run_id)
         if not job:
-            return
+            return None
         job["seq"] += 1
         event = {**event, "seq": job["seq"], "ts": time.time()}
         job["events"].append(event)
         if len(job["events"]) > 200:          # 只留最近 200 条，防长任务撑爆内存
             del job["events"][:-200]
+        return event
 
     def job_events(self, run_id: str, after: int, timeout: float = 10.0):
         """等到有新事件或作业结束，返回 (事件列表, 是否结束)。"""
         with self._job_cond:
             job = self.jobs.get(run_id)
-            if not job:
-                return [], True
+            if job is None:
+                return self.store.job_read(run_id, after)   # 重启后从 store 回放
             if job["seq"] <= after and not job["done"]:
                 self._job_cond.wait(timeout)
             job = self.jobs.get(run_id) or {}

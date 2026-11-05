@@ -6,7 +6,7 @@
 - **v2.0 桥（`agentrpa_bridge`）**：影刀 / UiPath / Power Automate 反过来调用 Codex / Claude / DeepSeek Harness / 豆包，凭证托管、进程复用、并发闸门、限速、审计、指标；同时把影刀应用注册成 MCP 工具给智能体调用。
 
 [![CI](https://github.com/c8xm/rpa-llm-bridge/actions/workflows/ci.yml/badge.svg)](https://github.com/c8xm/rpa-llm-bridge/actions/workflows/ci.yml)
-![version](https://img.shields.io/badge/version-2.6.0-blue)
+![version](https://img.shields.io/badge/version-2.7.0-blue)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 ![python](https://img.shields.io/badge/python-3.11%20%7C%203.12-blue)
 
@@ -139,6 +139,23 @@ data: {"stage": "tool_call", "name": "read_file", "seq": 3}
 | lint 全量 | `ruff check .`（不再只查 E9/F63/F7/F82） |
 | 死代码清理 | 删掉从未被引用的 `agentrpa/core/registry.py` |
 
+### v2.7 新增：Redis 后端 + 事件持久化
+
+![三种状态后端](docs/assets/v27-state-backends.png)
+
+| 后端 | 限速 | 幂等 | 作业事件 |
+|---|---|---|---|
+| `memory` | 滑动窗口（进程内） | 进程内 | 重启即丢 |
+| `sqlite` | 滑动窗口（WAL） | 表 + 事务 | 落盘，重启回放 |
+| `redis` | 固定窗口（INCR） | `SET NX PX` | List + done 键 |
+
+```powershell
+$env:AGENTRPA_STATE_BACKEND = "redis"
+$env:AGENTRPA_REDIS_URL     = "redis://10.0.0.9:6379/0"
+```
+
+进程重启后，`GET /v1/jobs/{id}/events` 仍能全量回放，`GET /v1/jobs/{id}` 返回 `status: recovered`。
+
 ## 快速开始
 
 ### 只跑桥（零第三方依赖）
@@ -210,7 +227,7 @@ rpa-llm-bridge/
 ├─ scripts/                  export_mcp_config.py / install_windows.ps1 / make_assets.py
 ├─ examples/                 local_demo.py（RPA 调智能体）/ reverse_demo.py（智能体调 RPA）
 │                            mock_yingdao_server.py（没有影刀环境时的假开放 API）
-├─ tests/                    150 个用例（内核 43 + 桥 51 + 反方向 5 + 护栏 11 + 加固 10 + 幂等/转义 11 + 共享状态 7 + 进度流 5 + MCP 单测 7）
+├─ tests/                    160 个用例（内核 43 + 桥 51 + 反方向 5 + 护栏 11 + 加固 10 + 幂等/转义 11 + 共享状态 7 + 进度流 5 + MCP 单测 7 + Redis/持久化 10）
 │                           覆盖率门槛 78%（当前 82%，drivers 需真机故 omit）
 └─ docs/                     USAGE.md / ENTERPRISE-ADOPTION.md / PLATFORMS.md / BRIDGE_DESIGN.md / DESIGN.md
 ```

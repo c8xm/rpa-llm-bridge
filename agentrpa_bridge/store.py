@@ -16,6 +16,7 @@ import time
 from collections import deque
 
 RATE_WINDOW = 60.0
+TERMINAL_STAGES = {"succeeded", "failed", "cancelled"}
 
 
 class MemoryStore:
@@ -28,6 +29,8 @@ class MemoryStore:
         self._lock = threading.RLock()
         self._hits = {}          # tenant -> deque[ts]
         self._idem = {}          # key -> dict(done, code, payload, ts)
+        self._jobs = {}          # run_id -> [event]（仅本进程可见）
+        self._jobs_done = set()
 
     # ---- 限速 ----
     def allow(self, tenant: str, limit: int, window: float = RATE_WINDOW) -> bool:
@@ -77,6 +80,22 @@ class MemoryStore:
         for k in [k for k, v in self._idem.items() if now - v["ts"] > self.ttl]:
             self._idem.pop(k, None)
 
+    # ---- 作业事件（进程内，重启即丢）----
+    def job_append(self, run_id: str, event: dict) -> None:
+        with self._lock:
+            entry = self._jobs.setdefault(run_id, [])
+            entry.append(event)
+            if len(entry) > 200:
+                del entry[:-200]
+            if event.get("stage") in TERMINAL_STAGES:
+                self._jobs_done.add(run_id)
+
+    def job_read(self, run_id: str, after: int = 0):
+        with self._lock:
+            events = list(self._jobs.get(run_id, []))
+            done = run_id in self._jobs_done      # 看整体，不看切片
+        return [e for e in events if e.get("seq", 0) > after], done
+
     def close(self) -> None:
         pass
 
@@ -107,6 +126,9 @@ class SQLiteStore:
         self._conn.execute("CREATE TABLE IF NOT EXISTS idem ("
                            "k TEXT PRIMARY KEY, done INTEGER, code INTEGER,"
                            "payload TEXT, ts REAL)")
+        self._conn.execute("CREATE TABLE IF NOT EXISTS job_event ("
+                           "run_id TEXT, seq INTEGER, ts REAL, data TEXT,"
+                           "PRIMARY KEY (run_id, seq))")
 
     # ---- 限速 ----
     def allow(self, tenant: str, limit: int, window: float = RATE_WINDOW) -> bool:
@@ -185,6 +207,34 @@ class SQLiteStore:
         done, code, payload = row
         return {"done": bool(done), "code": code, "payload": json.loads(payload or "{}")}
 
+    # ---- 作业事件（落盘，重启可回放）----
+    def job_append(self, run_id: str, event: dict) -> None:
+        seq = int(event.get("seq") or 0)
+        with self._lock:
+            with self._conn:
+                self._conn.execute(
+                    "INSERT OR REPLACE INTO job_event (run_id, seq, ts, data) "
+                    "VALUES (?, ?, ?, ?)",
+                    (run_id, seq, float(event.get("ts") or time.time()),
+                     json.dumps(event, ensure_ascii=False)))
+                self._conn.execute(
+                    "DELETE FROM job_event WHERE run_id = ? AND seq <= ?",
+                    (run_id, seq - 200))
+
+    def job_read(self, run_id: str, after: int = 0):
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT data FROM job_event WHERE run_id = ? AND seq > ? "
+                "ORDER BY seq", (run_id, after)).fetchall()
+        events = [json.loads(row[0]) for row in rows]
+        # done 看整体最后一条：否则 after 之后的切片为空时会永远等不到 end
+        with self._lock:
+            last = self._conn.execute(
+                "SELECT data FROM job_event WHERE run_id = ? ORDER BY seq DESC LIMIT 1",
+                (run_id,)).fetchone()
+        done = bool(last) and json.loads(last[0]).get("stage") in TERMINAL_STAGES
+        return events, done
+
     def sweep(self) -> None:
         if self.ttl <= 0:
             return
@@ -203,10 +253,197 @@ class SQLiteStore:
                 pass
 
 
-def make_store(kind: str, path: str, ttl: float):
+class _Resp:
+    """极简 Redis 客户端（RESP2）：只支持本模块用到的命令，零第三方依赖。"""
+
+    def __init__(self, host="127.0.0.1", port=6379, db=0, password="", tls=False,
+                 timeout=5.0):
+        import ssl
+        self.addr = (host, port)
+        self.db = db
+        self.password = password
+        self.tls = tls
+        self.timeout = timeout
+        self._sock = None
+        self._fp = None
+        self._ssl = ssl
+
+    def connect(self):
+        import socket  # noqa: F401  (便于测试替换)
+        raw = socket.create_connection(self.addr, timeout=self.timeout)
+        if self.tls:
+            raw = self._ssl.create_default_context().wrap_socket(raw,
+                                                                 server_hostname=self.addr[0])
+        self._sock = raw
+        self._fp = raw.makefile("rb")
+        if self.password:
+            self.cmd("AUTH", self.password)
+        if self.db:
+            self.cmd("SELECT", str(self.db))
+        return self
+
+    def close(self):
+        for obj in (self._fp, self._sock):
+            try:
+                if obj:
+                    obj.close()
+            except OSError:
+                pass
+        self._fp = self._sock = None
+
+    def _ensure(self):
+        if self._sock is None:
+            self.connect()
+
+    def _encode(self, args):
+        out = [f"*{len(args)}\r\n".encode()]
+        for arg in args:
+            blob = str(arg).encode()
+            out.append(f"${len(blob)}\r\n".encode() + blob + b"\r\n")
+        return b"".join(out)
+
+    def _read(self):
+        line = self._fp.readline()
+        if not line:
+            raise ConnectionError("redis 连接已关闭")
+        kind, body = line[:1], line[1:-2]
+        if kind == b"+":
+            return body.decode()
+        if kind == b"-":
+            raise RuntimeError(body.decode())
+        if kind == b":":
+            return int(body)
+        if kind == b"$":
+            size = int(body)
+            if size == -1:
+                return None
+            data = self._fp.read(size + 2)[:-2]
+            return data.decode("utf-8", "replace")
+        if kind == b"*":
+            count = int(body)
+            if count == -1:
+                return None
+            return [self._read() for _ in range(count)]
+        raise RuntimeError(f"无法解析的 RESP 响应：{line!r}")
+
+    def cmd(self, *args):
+        self._ensure()
+        try:
+            self._sock.sendall(self._encode(args))
+            return self._read()
+        except (ConnectionError, OSError):
+            self.close()
+            raise
+
+
+class RedisStore:
+    """Redis 实现：多机共享限速、幂等与作业事件。
+
+    - 限速：固定窗口（INCR + PEXPIRE），比内存/SQLite 的滑动窗口更省往返；
+    - 幂等：SET NX PX 抢占，值为 JSON（done/code/payload）；
+    - 作业事件：每个作业一个 List，LTRIM 保留最近 200 条，终态另置 done 键。
+    """
+
+    kind = "redis"
+    PREFIX = "rpa:"
+
+    def __init__(self, url: str = "redis://127.0.0.1:6379/0", ttl: float = 900.0,
+                 timeout: float = 5.0):
+        self.ttl = ttl
+        self.url = url
+        self.client = _Resp(**self._parse(url), timeout=timeout)
+
+    @staticmethod
+    def _parse(url: str) -> dict:
+        from urllib.parse import urlparse
+        parsed = urlparse(url if "://" in url else f"redis://{url}")
+        return {
+            "host": parsed.hostname or "127.0.0.1",
+            "port": parsed.port or 6379,
+            "db": int((parsed.path or "/0").strip("/") or 0),
+            "password": parsed.password or "",
+            "tls": parsed.scheme == "rediss",
+        }
+
+    def _key(self, suffix: str) -> str:
+        return f"{self.PREFIX}{suffix}"
+
+    # ---- 限速 ----
+    def allow(self, tenant: str, limit: int, window: float = RATE_WINDOW) -> bool:
+        if limit <= 0:
+            return True
+        bucket = int(time.time() // window)
+        key = self._key(f"rl:{tenant}:{bucket}")
+        count = self.client.cmd("INCR", key)
+        if count == 1:
+            self.client.cmd("PEXPIRE", key, int(window * 1000))
+        return int(count) <= limit
+
+    # ---- 幂等 ----
+    def idem_begin(self, key: str) -> tuple[str, dict | None, int]:
+        full = self._key(f"idem:{key}")
+        pending = json.dumps({"done": False, "code": 0, "payload": {}})
+        args = ["SET", full, pending, "NX"]
+        if self.ttl > 0:
+            args += ["PX", int(self.ttl * 1000)]
+        if self.client.cmd(*args):
+            return "new", None, 0
+        raw = self.client.cmd("GET", full)
+        if not raw:
+            return "new", None, 0
+        entry = json.loads(raw)
+        if entry.get("done"):
+            return "done", entry.get("payload") or {}, entry.get("code") or 200
+        return "inflight", None, 0
+
+    def idem_finish(self, key: str, code: int, payload: dict) -> None:
+        full = self._key(f"idem:{key}")
+        blob = json.dumps({"done": True, "code": code, "payload": payload},
+                          ensure_ascii=False)
+        if self.ttl > 0:
+            self.client.cmd("SET", full, blob, "PX", int(self.ttl * 1000))
+        else:
+            self.client.cmd("SET", full, blob)
+
+    def idem_get(self, key: str) -> dict | None:
+        raw = self.client.cmd("GET", self._key(f"idem:{key}"))
+        if not raw:
+            return None
+        entry = json.loads(raw)
+        return {"done": bool(entry.get("done")), "code": entry.get("code") or 0,
+                "payload": entry.get("payload") or {}}
+
+    # ---- 作业事件 ----
+    def job_append(self, run_id: str, event: dict) -> None:
+        key = self._key(f"job:{run_id}")
+        self.client.cmd("RPUSH", key, json.dumps(event, ensure_ascii=False))
+        self.client.cmd("LTRIM", key, -200, -1)
+        self.client.cmd("PEXPIRE", key, 86400 * 1000)
+        if event.get("stage") in TERMINAL_STAGES:
+            self.client.cmd("SET", self._key(f"job:{run_id}:done"), "1",
+                            "PX", 86400 * 1000)
+
+    def job_read(self, run_id: str, after: int = 0):
+        raw = self.client.cmd("LRANGE", self._key(f"job:{run_id}"), 0, -1) or []
+        events = [json.loads(item) for item in raw]
+        events = [e for e in events if e.get("seq", 0) > after]
+        done = bool(self.client.cmd("EXISTS", self._key(f"job:{run_id}:done")))
+        return events, done
+
+    def sweep(self) -> None:
+        return
+
+    def close(self) -> None:
+        self.client.close()
+
+
+def make_store(kind: str, path: str, ttl: float, url: str = ""):
     kind = (kind or "memory").lower()
     if kind == "memory":
         return MemoryStore(ttl=ttl)
     if kind == "sqlite":
         return SQLiteStore(path, ttl=ttl)
-    raise ValueError(f"未知的 AGENTRPA_STATE_BACKEND：{kind}（可选 memory / sqlite）")
+    if kind == "redis":
+        return RedisStore(url or os.environ.get("AGENTRPA_REDIS_URL",
+                                                "redis://127.0.0.1:6379/0"), ttl=ttl)
+    raise ValueError(f"未知的 AGENTRPA_STATE_BACKEND：{kind}（可选 memory / sqlite / redis）")
