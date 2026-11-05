@@ -1,4 +1,4 @@
-# 使用说明 · rpa-llm-bridge v2.3
+# 使用说明 · rpa-llm-bridge v2.4
 
 > 这份文档是操作手册，不是概念介绍。每一节都能直接照抄执行。
 > 概念与取舍见 [DESIGN.md](DESIGN.md)（v0.1 内核）与 [BRIDGE_DESIGN.md](BRIDGE_DESIGN.md)（v2.0 桥）；
@@ -90,7 +90,7 @@ python examples\local_demo.py
 ### 2.4 验证安装
 
 ```powershell
-python -m pytest                          # 131 passed（未装 openpyxl 时 125 passed, 1 skipped）
+python -m pytest                          # 138 passed（未装 openpyxl 时 132 passed, 1 skipped）
 python server.py --help 2>$null; echo $LASTEXITCODE   # v0.1 MCP 入口可加载
 python agentrpa_bridge\yingdao_mcp_server.py --selftest
 ```
@@ -148,6 +148,8 @@ agentrpa_agent_avg_ms{agent="codex"} 70
 | `AGENTRPA_AUDIT_DIR` | `artifacts/audit` | 审计目录 |
 | `AGENTRPA_JOB_TTL` | `3600` | 异步任务记录保留（秒） |
 | `AGENTRPA_IDEMPOTENCY_TTL` | `900` | `Idempotency-Key` 结果缓存时长（秒），0 = 关闭 |
+| `AGENTRPA_STATE_BACKEND` | `memory` | 限速与幂等的后端：`memory`（单机）/ `sqlite`（跨进程） |
+| `AGENTRPA_STATE_PATH` | `artifacts/bridge-state.db` | SQLite 库路径；放共享盘可跨机 |
 
 ### 4.2 后端
 
@@ -592,7 +594,25 @@ nssm start AgentRPABridge
 单次问答 3–15 秒（会话复用），冷启动 +2–5 秒。1000 单/天、每单 1–2 次调用，单节点 2 并发够用。
 MCP 会话是串行的（一条 stdio 管道），**要真并行就同名多实例或多节点**。
 
-### 10.4 灰度与回滚
+### 10.4 多节点：共享限速与幂等
+
+默认 `memory` 后端是进程内状态：起两个网关，限速就会变成两倍，幂等也会各算各的。
+同机多进程（或网关共用一块盘）时切 SQLite：
+
+```powershell
+$env:AGENTRPA_STATE_BACKEND = "sqlite"
+$env:AGENTRPA_STATE_PATH    = "D:\bridge\state.db"   # 两个节点指向同一个文件
+```
+
+| 后端 | 适用 | 说明 |
+|---|---|---|
+| `memory` | 单进程 / PoC | 零依赖，重启即清空 |
+| `sqlite` | 同机多进程、共享盘 | WAL + `BEGIN IMMEDIATE`，跨进程计数与幂等一致 |
+| Redis | 多机（未内置） | 实现 `store.py` 里同样的 4 个方法即可替换 |
+
+跨机用共享盘放 SQLite 属「能用但别硬扛」：网络文件系统的锁语义有差异，量大时换 Redis。
+
+### 10.5 灰度与回滚
 
 1. 先接一个非关键流程，`meta.flow` 打标。
 2. 看 `/metrics` 的失败率与 p95。
@@ -638,7 +658,7 @@ MCP 会话是串行的（一条 stdio 管道），**要真并行就同名多实�
 ## 13. 开发与测试
 
 ```powershell
-python -m pytest                                   # 全部 131 个用例
+python -m pytest                                   # 全部 138 个用例
 python -m pytest tests/test_gateway.py -v          # 单文件
 python -m unittest tests.test_gateway              # 桥的部分不需要 pytest
 ruff check agentrpa agentrpa_bridge server.py tests --select E9,F63,F7,F82
@@ -653,7 +673,7 @@ agentrpa/                  v0.1 内核：core / drivers / recipes
 agentrpa_bridge/           v2.0 桥：mcp_client / providers / gateway / yingdao_*
 sdk/rpa_agent_block.py     影刀代码块单文件 SDK
 scripts/                   export_mcp_config.py / install_windows.ps1 / make_assets.py
-tests/                     131 个用例（内核 43 + 桥 51 + 反方向 5 + 护栏 11 + 加固 10 + 幂等/转义 11）
+tests/                     138 个用例（内核 43 + 桥 51 + 反方向 5 + 护栏 11 + 加固 10 + 幂等/转义 11 + 共享状态 7）
 examples/local_demo.py     无 key 端到端演示
 ```
 

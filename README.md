@@ -6,7 +6,7 @@
 - **v2.0 桥（`agentrpa_bridge`）**：影刀 / UiPath / Power Automate 反过来调用 Codex / Claude / DeepSeek Harness / 豆包，凭证托管、进程复用、并发闸门、限速、审计、指标；同时把影刀应用注册成 MCP 工具给智能体调用。
 
 [![CI](https://github.com/c8xm/rpa-llm-bridge/actions/workflows/ci.yml/badge.svg)](https://github.com/c8xm/rpa-llm-bridge/actions/workflows/ci.yml)
-![version](https://img.shields.io/badge/version-2.3.0-blue)
+![version](https://img.shields.io/badge/version-2.4.0-blue)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 ![python](https://img.shields.io/badge/python-3.11%20%7C%203.12-blue)
 
@@ -91,6 +91,23 @@ curl -s -X POST http://127.0.0.1:8765/v1/invoke `
   -d '{"agent":"codex","prompt":"……"}'
 ```
 
+### v2.4 新增：跨节点共享状态
+
+限速与幂等不再困在单个进程里：
+
+```powershell
+$env:AGENTRPA_STATE_BACKEND = "sqlite"
+$env:AGENTRPA_STATE_PATH    = "D:\bridge\state.db"
+```
+
+| 后端 | 适用 |
+|---|---|
+| `memory`（默认） | 单进程 / PoC |
+| `sqlite` | 同机多进程、共享盘；WAL + `BEGIN IMMEDIATE` 保证跨进程一致 |
+| Redis | 未内置，按 `store.py` 的 4 个方法实现即可 |
+
+两个网关共用一个库时，同一个 `Idempotency-Key` 只会跑一次 agent（有用例锁死）。
+
 ## 快速开始
 
 ### 只跑桥（零第三方依赖）
@@ -162,7 +179,7 @@ rpa-llm-bridge/
 ├─ scripts/                  export_mcp_config.py / install_windows.ps1 / make_assets.py
 ├─ examples/                 local_demo.py（RPA 调智能体）/ reverse_demo.py（智能体调 RPA）
 │                            mock_yingdao_server.py（没有影刀环境时的假开放 API）
-├─ tests/                    131 个用例（内核 43 + 桥 51 + 反方向 5 + 护栏 11 + 加固 10 + 幂等/转义 11）
+├─ tests/                    138 个用例（内核 43 + 桥 51 + 反方向 5 + 护栏 11 + 加固 10 + 幂等/转义 11 + 共享状态 7）
 └─ docs/                     USAGE.md / ENTERPRISE-ADOPTION.md / PLATFORMS.md / BRIDGE_DESIGN.md / DESIGN.md
 ```
 

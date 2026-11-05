@@ -28,11 +28,11 @@ import secrets
 import threading
 import time
 import uuid
-from collections import deque
 from dataclasses import dataclass, field
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from .providers import AgentError, AgentPool, default_specs, redact
+from .store import make_store
 
 MAX_BODY = 2 * 1024 * 1024
 # 超限时最多再丢弃这么多字节，让客户端能读到 413，而不是连接被重置
@@ -57,6 +57,8 @@ class GatewayConfig:
     audit_dir: str = "artifacts/audit"
     job_ttl: float = 3600.0
     idempotency_ttl: float = 900.0
+    state_backend: str = "memory"                     # memory | sqlite
+    state_path: str = "artifacts/bridge-state.db"
 
     @classmethod
     def from_env(cls) -> "GatewayConfig":
@@ -77,6 +79,8 @@ class GatewayConfig:
             audit_dir=os.environ.get("AGENTRPA_AUDIT_DIR", "artifacts/audit"),
             job_ttl=float(os.environ.get("AGENTRPA_JOB_TTL", "3600")),
             idempotency_ttl=float(os.environ.get("AGENTRPA_IDEMPOTENCY_TTL", "900")),
+            state_backend=os.environ.get("AGENTRPA_STATE_BACKEND", "memory"),
+            state_path=os.environ.get("AGENTRPA_STATE_PATH", "artifacts/bridge-state.db"),
         )
 
 
@@ -136,26 +140,9 @@ class Metrics:
         return "\n".join(lines) + "\n"
 
 
-class RateLimiter:
-    """滑动窗口：每分钟每 tenant 多少次。"""
+def _idem_key(key: tuple) -> str:
+    return f"{key[0]}\x00{key[1]}"
 
-    def __init__(self, per_minute: int):
-        self.per_minute = per_minute
-        self._hits = {}
-        self._lock = threading.Lock()
-
-    def allow(self, key: str) -> bool:
-        if self.per_minute <= 0:
-            return True
-        now = time.monotonic()
-        with self._lock:
-            bucket = self._hits.setdefault(key, deque())
-            while bucket and now - bucket[0] > 60:
-                bucket.popleft()
-            if len(bucket) >= self.per_minute:
-                return False
-            bucket.append(now)
-            return True
 
 
 # ----------------------------- 网关状态 -----------------------------
@@ -165,45 +152,21 @@ class GatewayState:
         self.pool = pool or AgentPool(default_specs(), idle_ttl=config.idle_ttl)
         self.audit = AuditLog(config.audit_dir)
         self.metrics = Metrics()
-        self.limiter = RateLimiter(config.rate_limit_per_min)
+        self.store = make_store(config.state_backend, config.state_path,
+                                config.idempotency_ttl)
         self.semaphore = threading.BoundedSemaphore(max(1, config.max_concurrency))
         self.jobs = {}
         self._jobs_lock = threading.Lock()
-        # 幂等表：(tenant, key) -> {"done": bool, "code": int, "payload": dict,
-        #                          "event": Event, "ts": float}
-        self.idem = {}
-        self._idem_lock = threading.Lock()
 
-    # ---- 幂等表 ----
+    # ---- 幂等（交给 store，可跨进程）----
+    def idem_begin(self, key: tuple) -> tuple[str, dict | None]:
+        return self.store.idem_begin(_idem_key(key))
+
+    def idem_finish(self, key: tuple, code: int, payload: dict) -> None:
+        self.store.idem_finish(_idem_key(key), code, payload)
+
     def idem_get(self, key: tuple):
-        with self._idem_lock:
-            self._gc_idem()
-            return self.idem.get(key)
-
-    def idem_new(self, key: tuple) -> dict:
-        entry = {"done": False, "code": 0, "payload": {}, "ts": time.time(),
-                 "event": threading.Event()}
-        with self._idem_lock:
-            self.idem[key] = entry
-        return entry
-
-    def idem_finish(self, key: tuple, code: int, payload: dict):
-        with self._idem_lock:
-            entry = self.idem.get(key)
-            if entry is None:
-                return
-            entry.update({"done": True, "code": code, "payload": payload,
-                          "ts": time.time()})
-        entry["event"].set()
-
-    def _gc_idem(self):
-        ttl = self.config.idempotency_ttl
-        if ttl <= 0:
-            self.idem.clear()
-            return
-        now = time.time()
-        for k in [k for k, v in self.idem.items() if now - v["ts"] > ttl]:
-            self.idem.pop(k, None)
+        return self.store.idem_get(_idem_key(key))
 
     # ---- 任务表 ----
     def new_job(self) -> str:
@@ -229,6 +192,12 @@ class GatewayState:
         with self._jobs_lock:
             job = self.jobs.get(run_id)
             return dict(job) if job else None
+
+    def close(self):
+        try:
+            self.pool.close()
+        finally:
+            self.store.close()
 
 
 # ----------------------------- 路由 -----------------------------
@@ -313,7 +282,7 @@ def _make_handler(state: GatewayState):
                 return None
             self.tenant = tenant
             state.metrics.inc("requests_total")
-            if not state.limiter.allow(tenant):
+            if not state.store.allow(tenant, state.config.rate_limit_per_min):
                 state.metrics.inc("rate_limited_total")
                 self._reject(429, {"error": "rate limited",
                                    "limit_per_min": state.config.rate_limit_per_min,
@@ -387,19 +356,25 @@ def _make_handler(state: GatewayState):
             raw_key = (self.headers.get("Idempotency-Key") or "").strip()
             idem_key = (tenant, raw_key) if raw_key else None
             if idem_key:
-                hit = state.idem_get(idem_key)
-                if hit is not None:
-                    if not hit["done"]:
-                        hit["event"].wait(state.config.queue_timeout)
-                    if hit["done"]:
-                        payload = dict(hit["payload"])
-                        payload["idempotent_replay"] = True
-                        self._send(hit["code"] or 200, payload)
-                        return
+                verdict, cached, code = state.idem_begin(idem_key)
+                if verdict == "done":
+                    payload = dict(cached or {})
+                    payload["idempotent_replay"] = True
+                    self._send(code or 200, payload)
+                    return
+                if verdict == "inflight":
+                    deadline = time.monotonic() + state.config.queue_timeout
+                    while time.monotonic() < deadline:
+                        time.sleep(0.05)
+                        hit = state.idem_get(idem_key)
+                        if hit and hit["done"]:
+                            payload = dict(hit["payload"])
+                            payload["idempotent_replay"] = True
+                            self._send(hit["code"] or 200, payload)
+                            return
                     self._reject(409, {"error": "duplicate request in flight",
                                        "request_id": self.request_id})
                     return
-                state.idem_new(idem_key)
 
             captured = {}
 
@@ -502,7 +477,7 @@ def main(argv=None):
     except KeyboardInterrupt:
         pass
     finally:
-        httpd.state.pool.close()
+        httpd.state.close()
         httpd.server_close()
 
 
