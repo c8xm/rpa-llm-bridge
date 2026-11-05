@@ -10,9 +10,9 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 sys.path.insert(0, os.path.join(ROOT, "scripts"))
 
-from agentrpa_bridge.providers import (AgentError, AgentSpec, CliProvider,
-                                       OpenAICompatProvider, default_specs)
 import export_mcp_config as exporter  # noqa: E402
+
+from agentrpa_bridge.providers import AgentError, AgentSpec, CliProvider, OpenAICompatProvider, default_specs
 
 FAKE_DSH = os.path.join(ROOT, "tests", "fake_dsh.py")
 

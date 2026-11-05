@@ -1,12 +1,10 @@
 import os
 import sys
-import time
 import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from agentrpa_bridge.mcp_client import (McpError, McpStdioClient, McpTimeout,
-                                        unwrap_agent_text)
+from agentrpa_bridge.mcp_client import McpError, McpStdioClient, McpTimeout, unwrap_agent_text
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 FAKE = os.path.join(HERE, "fake_mcp_server.py")

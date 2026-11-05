@@ -6,8 +6,6 @@ import pytest
 
 pytest.importorskip("openpyxl")
 
-from agentrpa.core.audit import AuditLog
-from agentrpa.core.policy import Policy
 from agentrpa.drivers.base import DriverError
 from agentrpa.drivers.office import OfficeDriver
 

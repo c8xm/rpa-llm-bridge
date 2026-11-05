@@ -8,9 +8,15 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 
-from agentrpa_bridge.providers import (AgentError, AgentPool, AgentSpec,
-                                       CliProvider, McpAgentProvider,
-                                       OpenAICompatProvider, redact)
+from agentrpa_bridge.providers import (
+    AgentError,
+    AgentPool,
+    AgentSpec,
+    CliProvider,
+    McpAgentProvider,
+    OpenAICompatProvider,
+    redact,
+)
 
 FAKE = os.path.join(ROOT, "tests", "fake_mcp_server.py")
 

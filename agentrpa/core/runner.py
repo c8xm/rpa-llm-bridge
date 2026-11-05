@@ -148,7 +148,9 @@ class RecipeRunner:
         if self.settings.dry_run:
             elapsed = int((time.perf_counter() - started) * 1000)
             self.audit.record("step.dry_run", step_id=step.id, action=step.action, params=params)
-            return StepResult(step.id, "ok", output={"dry_run": True, "action": step.action}, elapsed_ms=elapsed)
+            return StepResult(step.id, "ok",
+                              output={"dry_run": True, "action": step.action},
+                              elapsed_ms=elapsed)
 
         if driver is None:
             return StepResult(step.id, "failed", error=f"未注册的驱动: {step.driver}")

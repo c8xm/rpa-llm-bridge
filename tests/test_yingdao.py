@@ -1,4 +1,4 @@
-﻿import json
+import json
 import os
 import sys
 import threading
@@ -8,8 +8,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from agentrpa_bridge.mcp_client import McpStdioClient
-from agentrpa_bridge.yingdao_api import (YingDaoError, YingDaoOpenApi,
-                                        _split_args)
+from agentrpa_bridge.yingdao_api import YingDaoError, YingDaoOpenApi, _split_args
 
 SERVER = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
                       "agentrpa_bridge", "yingdao_mcp_server.py")
@@ -31,7 +30,8 @@ class StubHandler(BaseHTTPRequestHandler):
     def do_POST(self):
         length = int(self.headers.get("Content-Length") or 0)
         raw = self.rfile.read(length) if length else b"{}"
-        SEEN.append({"path": self.path, "headers": {k.lower(): v for k, v in self.headers.items()}, "body": raw})
+        SEEN.append({"path": self.path, "body": raw,
+                     "headers": {k.lower(): v for k, v in self.headers.items()}})
         if "broken" in self.path:
             self._send({"code": 1001, "message": "signature invalid"})
         elif self.path.endswith("/app/list"):
@@ -42,7 +42,8 @@ class StubHandler(BaseHTTPRequestHandler):
             self._send({"code": 0, "data": {}})
 
     def do_GET(self):
-        SEEN.append({"path": self.path, "headers": {k.lower(): v for k, v in self.headers.items()}, "body": b""})
+        SEEN.append({"path": self.path, "body": b"",
+                     "headers": {k.lower(): v for k, v in self.headers.items()}})
         if "/job/detail" in self.path:
             self._send({"code": 0, "data": {"jobId": "job_9", "status": "success",
                                             "output": {"rows": 12}}})

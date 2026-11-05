@@ -6,7 +6,7 @@
 - **v2.0 桥（`agentrpa_bridge`）**：影刀 / UiPath / Power Automate 反过来调用 Codex / Claude / DeepSeek Harness / 豆包，凭证托管、进程复用、并发闸门、限速、审计、指标；同时把影刀应用注册成 MCP 工具给智能体调用。
 
 [![CI](https://github.com/c8xm/rpa-llm-bridge/actions/workflows/ci.yml/badge.svg)](https://github.com/c8xm/rpa-llm-bridge/actions/workflows/ci.yml)
-![version](https://img.shields.io/badge/version-2.0.0-blue)
+![version](https://img.shields.io/badge/version-2.2.0-blue)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 ![python](https://img.shields.io/badge/python-3.11%20%7C%203.12-blue)
 
@@ -62,6 +62,20 @@
 | 幂等窗口 | `YINGDAO_IDEMPOTENCY_TTL` | 同参重复提交返回同一 `jobId`，不会重复跑 |
 
 新增 `rpa_policy` 工具，智能体可自行查看护栏状态与在跑任务数。落地路径（角色、四阶段、评审问答、验收清单）见 [企业接入方案](docs/ENTERPRISE-ADOPTION.md)。
+
+### v2.2 新增：安全与稳定性加固
+
+一轮"按能不能上线"标准的自审，修掉 5 个已被复现的边界问题（详见 [Release v2.2.0](https://github.com/c8xm/rpa-llm-bridge/releases/tag/v2.2.0)）：
+
+| 问题 | 修法 |
+|---|---|
+| 没配 token 时任意 Bearer 都放行 | 常量时间逐个比对，未知 token 一律 401 |
+| 超限 body 打断 keep-alive 连接 | 丢弃 body + `Connection: close` + 明码 413 |
+| 同一 agent 的串行锁不受 timeout 约束 | 锁等待按调用方预算超时，返回 `busy` |
+| 超时被当成可重试错误 | 超时不再重试，只对进程崩溃重连一次 |
+| 审计只脱敏 key，不脱敏 PII | 手机 / 身份证 / 银行卡 / 邮箱统一打码 |
+
+另外：`AGENTRPA_ALLOW_ANON` 默认改为 `0`；RPA 并发槽位加 `YINGDAO_MAX_HOLD` 自动回收；wheel 补发 `server.py` 与影刀 SDK。
 
 ## 快速开始
 
@@ -134,7 +148,7 @@ rpa-llm-bridge/
 ├─ scripts/                  export_mcp_config.py / install_windows.ps1 / make_assets.py
 ├─ examples/                 local_demo.py（RPA 调智能体）/ reverse_demo.py（智能体调 RPA）
 │                            mock_yingdao_server.py（没有影刀环境时的假开放 API）
-├─ tests/                    110 个用例（内核 43 + 桥 51 + 反方向 5 + 护栏 11）
+├─ tests/                    120 个用例（内核 43 + 桥 51 + 反方向 5 + 护栏 11 + 加固 10）
 └─ docs/                     USAGE.md / ENTERPRISE-ADOPTION.md / PLATFORMS.md / BRIDGE_DESIGN.md / DESIGN.md
 ```
 

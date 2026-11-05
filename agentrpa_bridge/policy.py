@@ -36,11 +36,14 @@ class PolicyDenied(RuntimeError):
 
 class GuardConfig:
     def __init__(self, allowed_apps=None, approval_apps=None,
-                 max_per_app: int = 4, idem_ttl: float = 900.0):
+                 max_per_app: int = 4, idem_ttl: float = 900.0,
+                 max_hold: float = 3600.0):
         self.allowed_apps = {a.strip() for a in (allowed_apps or []) if a and a.strip()}
         self.approval_apps = {a.strip() for a in (approval_apps or []) if a and a.strip()}
         self.max_per_app = max(1, int(max_per_app))
         self.idem_ttl = max(0.0, float(idem_ttl))
+        # 没人轮询终态时，槽位最多占这么久；超时自动回收，避免全体 busy
+        self.max_hold = max(0.0, float(max_hold))
 
     @classmethod
     def from_env(cls) -> "GuardConfig":
@@ -52,6 +55,7 @@ class GuardConfig:
             approval_apps=split("YINGDAO_APPROVAL_APPS"),
             max_per_app=int(os.environ.get("YINGDAO_MAX_PER_APP", "4")),
             idem_ttl=float(os.environ.get("YINGDAO_IDEMPOTENCY_TTL", "900")),
+            max_hold=float(os.environ.get("YINGDAO_MAX_HOLD", "3600")),
         )
 
 
@@ -60,10 +64,11 @@ class RpaGuard:
         self.config = config or GuardConfig.from_env()
         self._clock = clock
         self._lock = threading.RLock()
-        self._inflight = {}      # app_id -> 正在跑的 job 数
+        self._holds = {}         # app_id -> [acquire_ts, ...]
         self._idem = {}          # key -> (job_id, ts)
         self._job_app = {}       # job_id -> app_id
-        self._stats = {"denied": 0, "deduplicated": 0, "busy": 0, "approved": 0}
+        self._stats = {"denied": 0, "deduplicated": 0, "busy": 0,
+                       "approved": 0, "expired": 0}
 
     # ---------- 规则 1：白名单 ----------
     def check_app(self, app_id: str) -> None:
@@ -115,22 +120,39 @@ class RpaGuard:
             self._job_app[job_id] = app_id
 
     # ---------- 规则 3：并发 ----------
+    def _sweep(self) -> None:
+        """回收超过 max_hold 的槽位：没人轮询终态时不会永久占坑。"""
+        if self.config.max_hold <= 0:
+            return
+        now = self._clock()
+        for app_id in list(self._holds):
+            kept = [ts for ts in self._holds[app_id] if now - ts <= self.config.max_hold]
+            dropped = len(self._holds[app_id]) - len(kept)
+            if dropped:
+                self._stats["expired"] = self._stats.get("expired", 0) + dropped
+            if kept:
+                self._holds[app_id] = kept
+            else:
+                self._holds.pop(app_id, None)
+
     def acquire(self, app_id: str) -> None:
         with self._lock:
-            current = self._inflight.get(app_id, 0)
-            if current >= self.config.max_per_app:
+            self._sweep()
+            holds = self._holds.setdefault(app_id, [])
+            if len(holds) >= self.config.max_per_app:
                 self._bump("busy")
                 raise PolicyDenied("busy", f"应用 {app_id} 并发已满（上限 {self.config.max_per_app}）",
                                    app_id=app_id, limit=self.config.max_per_app)
-            self._inflight[app_id] = current + 1
+            holds.append(self._clock())
 
     def release(self, app_id: str) -> None:
         with self._lock:
-            current = self._inflight.get(app_id, 0)
-            if current <= 1:
-                self._inflight.pop(app_id, None)
-            else:
-                self._inflight[app_id] = current - 1
+            holds = self._holds.get(app_id)
+            if not holds:
+                return
+            holds.pop(0)          # 先回收最早占用的那一格
+            if not holds:
+                self._holds.pop(app_id, None)
 
     def observe(self, job_id: str, status: str) -> None:
         """轮询到终态时释放并发槽位。"""
@@ -151,12 +173,14 @@ class RpaGuard:
 
     def snapshot(self) -> dict:
         with self._lock:
+            self._sweep()
             return {
                 "whitelist_enforced": bool(self.config.allowed_apps),
                 "allowed_apps": sorted(self.config.allowed_apps),
                 "approval_apps": sorted(self.config.approval_apps),
                 "max_per_app": self.config.max_per_app,
+                "max_hold_s": self.config.max_hold,
                 "idempotency_ttl_s": self.config.idem_ttl,
-                "inflight": dict(self._inflight),
+                "inflight": {k: len(v) for k, v in self._holds.items()},
                 "stats": dict(self._stats),
             }

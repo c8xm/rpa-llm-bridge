@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "rpa-llm-bridge"
-version = "2.1.0"
+version = "2.2.0"
 description = "企业 RPA 与智能体之间的双向桥：MCP 工具层 + 声明式 Recipe + 策略闸门（v0.1 内核），以及 RPA ↔ Codex/Claude/dsh/豆包 的网关与 SDK（v2.0）"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -43,7 +43,12 @@ agentrpa-rpa-mcp = "agentrpa_bridge.yingdao_mcp_server:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["agentrpa", "agentrpa_bridge"]
-include = ["server.py"]
+
+# 入口 agentrpa = "server:main" 要求 server.py 落在 site-packages 根；
+# 影刀 SDK 也必须随包分发，否则 pip 装完拿不到 rpa_agent_block.py
+[tool.hatch.build.targets.wheel.force-include]
+"server.py" = "server.py"
+"sdk/rpa_agent_block.py" = "agentrpa_bridge/sdk/rpa_agent_block.py"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -57,3 +62,10 @@ target-version = "py311"
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I"]
+
+[tool.ruff.lint.per-file-ignores]
+# 测试要先把仓库根塞进 sys.path，导入必然在语句之后
+"tests/*" = ["E402"]
+# 历史文件与生成脚本的排版不做强制
+"server.py" = ["E501"]
+"scripts/*" = ["E501"]

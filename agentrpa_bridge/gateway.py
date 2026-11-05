@@ -24,6 +24,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import secrets
 import threading
 import time
 import uuid
@@ -34,6 +35,12 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from .providers import AgentError, AgentPool, default_specs, redact
 
 MAX_BODY = 2 * 1024 * 1024
+# 超限时最多再丢弃这么多字节，让客户端能读到 413，而不是连接被重置
+DRAIN_CAP = 16 * 1024 * 1024
+
+
+class PayloadTooLarge(ValueError):
+    """请求体超过 MAX_BODY；调用方必须关闭连接，不能继续 keep-alive。"""
 
 
 # ----------------------------- 配置 -----------------------------
@@ -61,7 +68,7 @@ class GatewayConfig:
             host=os.environ.get("AGENTRPA_HOST", "127.0.0.1"),
             port=int(os.environ.get("AGENTRPA_PORT", "8765")),
             tokens=tokens,
-            allow_anon_localhost=os.environ.get("AGENTRPA_ALLOW_ANON", "1") == "1",
+            allow_anon_localhost=os.environ.get("AGENTRPA_ALLOW_ANON", "0") == "1",
             max_concurrency=int(os.environ.get("AGENTRPA_MAX_CONCURRENCY", "4")),
             queue_timeout=float(os.environ.get("AGENTRPA_QUEUE_TIMEOUT", "30")),
             rate_limit_per_min=int(os.environ.get("AGENTRPA_RATE_LIMIT", "60")),
@@ -204,32 +211,60 @@ def _make_handler(state: GatewayState):
             self.send_header("Content-Type", ctype + "; charset=utf-8")
             self.send_header("Content-Length", str(len(body)))
             self.send_header("X-Request-Id", getattr(self, "request_id", "-"))
+            if self.close_connection:
+                self.send_header("Connection", "close")
             self.end_headers()
             self.wfile.write(body)
+
+        def _drain(self, length: int, chunk: int = 256 * 1024):
+            """把 body 读掉丢弃，避免 keep-alive 上残留字节被当成下一个请求。"""
+            remaining = length
+            while remaining > 0:
+                try:
+                    blob = self.rfile.read(min(chunk, remaining))
+                except (OSError, ValueError):
+                    return
+                if not blob:
+                    return
+                remaining -= len(blob)
 
         def _read_json(self) -> dict:
             length = int(self.headers.get("Content-Length") or 0)
             if length <= 0:
                 return {}
             if length > MAX_BODY:
-                raise ValueError("请求体过大")
+                # 先尽量把 body 读掉：否则客户端在写的时候就被 RST，看不到 413
+                self._drain(min(length, DRAIN_CAP))
+                self.close_connection = True
+                raise PayloadTooLarge(f"请求体 {length} 字节，超过上限 {MAX_BODY}")
             raw = self.rfile.read(length)
             try:
                 return json.loads(raw.decode("utf-8"))
             except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+                self.close_connection = True
                 raise ValueError(f"请求体不是合法 JSON：{exc}")
 
         def _tenant(self):
             header = self.headers.get("Authorization") or ""
             token = header[7:].strip() if header.lower().startswith("bearer ") else ""
-            if token and token in state.config.tokens:
-                return state.config.tokens[token]
-            if token and not state.config.tokens:
-                return "default"
-            if not token and state.config.allow_anon_localhost and \
+            if token:
+                # 没配 tokens 时不再"任意 token 放行"，必须逐个常量时间比对
+                for known, tenant in state.config.tokens.items():
+                    if secrets.compare_digest(token, known):
+                        return tenant
+                return None
+            if state.config.allow_anon_localhost and \
                     self.client_address[0] in ("127.0.0.1", "::1"):
                 return "localhost"
             return None
+
+        def _reject(self, code: int, payload: dict):
+            """拒绝请求前先把 body 读掉并关闭连接，否则客户端可能在写 body 时被 RST。"""
+            length = int(self.headers.get("Content-Length") or 0)
+            if length > 0:
+                self._drain(min(length, DRAIN_CAP))
+            self.close_connection = True
+            self._send(code, payload)
 
         def _guard(self):
             self.request_id = uuid.uuid4().hex[:12]
@@ -237,15 +272,15 @@ def _make_handler(state: GatewayState):
             if tenant is None:
                 state.metrics.inc("requests_total")
                 state.metrics.inc("auth_failures_total")
-                self._send(401, {"error": "unauthorized", "request_id": self.request_id})
+                self._reject(401, {"error": "unauthorized", "request_id": self.request_id})
                 return None
             self.tenant = tenant
             state.metrics.inc("requests_total")
             if not state.limiter.allow(tenant):
                 state.metrics.inc("rate_limited_total")
-                self._send(429, {"error": "rate limited",
-                                 "limit_per_min": state.config.rate_limit_per_min,
-                                 "request_id": self.request_id})
+                self._reject(429, {"error": "rate limited",
+                                   "limit_per_min": state.config.rate_limit_per_min,
+                                   "request_id": self.request_id})
                 return None
             return tenant
 
@@ -283,8 +318,12 @@ def _make_handler(state: GatewayState):
                 return
             try:
                 body = self._read_json()
+            except PayloadTooLarge as exc:
+                self._send(413, {"error": "payload too large", "detail": str(exc),
+                                 "request_id": self.request_id})
+                return
             except ValueError as exc:
-                self._send(400, {"error": str(exc)})
+                self._send(400, {"error": str(exc), "request_id": self.request_id})
                 return
             if path not in ("/v1/invoke", "/v1/jobs"):
                 self._send(404, {"error": "not found"})
@@ -334,7 +373,7 @@ def _invoke_once(state: GatewayState, request_id: str, agent: str, prompt: str,
                    "request_id": request_id}
         state.audit.write({"event": "invoke", "tenant": meta.get("tenant"),
                            "flow": meta.get("flow"), "agent": agent,
-                           "prompt_sha256": _sha(prompt), "prompt_head": prompt[:200],
+                           "prompt_sha256": _sha(prompt), "prompt_head": redact(prompt[:200]),
                            "status": "succeeded", "text_len": len(result["text"]),
                            "duration_ms": result["duration_ms"],
                            "request_id": request_id, "job": job_id})
@@ -347,7 +386,7 @@ def _invoke_once(state: GatewayState, request_id: str, agent: str, prompt: str,
         msg = redact(str(exc))
         state.audit.write({"event": "invoke", "tenant": meta.get("tenant"),
                            "flow": meta.get("flow"), "agent": agent,
-                           "prompt_sha256": _sha(prompt), "prompt_head": prompt[:200],
+                           "prompt_sha256": _sha(prompt), "prompt_head": redact(prompt[:200]),
                            "status": "failed", "error": msg,
                            "duration_ms": int((time.time() - started) * 1000),
                            "request_id": request_id, "job": job_id})

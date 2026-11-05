@@ -18,8 +18,7 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from agentrpa_bridge.policy import GuardConfig, PolicyDenied, RpaGuard  # noqa: E402
-from agentrpa_bridge.yingdao_api import (YingDaoError, YingDaoLocal,  # noqa: E402
-                                        YingDaoOpenApi)
+from agentrpa_bridge.yingdao_api import YingDaoError, YingDaoLocal, YingDaoOpenApi  # noqa: E402
 
 PROTOCOL_VERSION = "2025-06-18"
 

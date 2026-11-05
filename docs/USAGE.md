@@ -90,7 +90,7 @@ python examples\local_demo.py
 ### 2.4 验证安装
 
 ```powershell
-python -m pytest                          # 110 passed
+python -m pytest                          # 120 passed（未装 openpyxl 时 114 passed, 1 skipped）
 python server.py --help 2>$null; echo $LASTEXITCODE   # v0.1 MCP 入口可加载
 python agentrpa_bridge\yingdao_mcp_server.py --selftest
 ```
@@ -140,7 +140,7 @@ agentrpa_agent_avg_ms{agent="codex"} 70
 | `AGENTRPA_HOST` | `127.0.0.1` | 生产改内网 IP，公网必须前置 TLS |
 | `AGENTRPA_PORT` | `8765` | |
 | `AGENTRPA_TOKENS` | 空 | `tenant:token,tenant:token`；**生产必须配** |
-| `AGENTRPA_ALLOW_ANON` | `1` | 是否允许本机匿名；生产设 `0` |
+| `AGENTRPA_ALLOW_ANON` | `0` | 是否允许本机匿名；v2.2 起默认关闭，PoC 才设 `1` |
 | `AGENTRPA_MAX_CONCURRENCY` | `4` | 同时在跑的调用数 |
 | `AGENTRPA_QUEUE_TIMEOUT` | `30` | 排队超时（秒），超了回 503 |
 | `AGENTRPA_RATE_LIMIT` | `60` | 每 tenant 每分钟请求上限 |
@@ -179,6 +179,7 @@ agentrpa_agent_avg_ms{agent="codex"} 70
 | `YINGDAO_APPROVAL_APPS` | 需人工审批的应用，调用时必须带 `approved_by` |
 | `YINGDAO_MAX_PER_APP` | 单应用并发上限，= 该应用可用机器人数 |
 | `YINGDAO_IDEMPOTENCY_TTL` | 幂等窗口（秒），同参重复提交返回原 jobId |
+| `YINGDAO_MAX_HOLD` | 槽位最长占用（秒），超时自动回收 |
 
 ### 4.4 RPA 工位侧
 
@@ -494,6 +495,7 @@ python examples\reverse_demo.py
 | `YINGDAO_APPROVAL_APPS` | 清单内应用必须带 `approved_by`，否则返回 `requires_approval` | 资金/对外发送类流程 |
 | `YINGDAO_MAX_PER_APP` | 单应用并发上限，满了返回 `busy`（不排队） | = 该应用可用机器人数 |
 | `YINGDAO_IDEMPOTENCY_TTL` | 同参数窗口内重复提交返回同一 jobId（`deduplicated: true`） | 900 |
+| `YINGDAO_MAX_HOLD` | 没人轮询终态时槽位最长占用，超时自动回收 | 3600 |
 
 ```powershell
 $env:YINGDAO_ALLOWED_APPS    = "app_invoice,app_reconcile"

@@ -9,10 +9,10 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 sys.path.insert(0, os.path.join(ROOT, "examples"))
 
-from agentrpa_bridge.mcp_client import McpStdioClient  # noqa: E402
-from agentrpa_bridge.policy import (GuardConfig, PolicyDenied,  # noqa: E402
-                                    RpaGuard)
 import mock_yingdao_server  # noqa: E402
+
+from agentrpa_bridge.mcp_client import McpStdioClient  # noqa: E402
+from agentrpa_bridge.policy import GuardConfig, PolicyDenied, RpaGuard  # noqa: E402
 
 SERVER = os.path.join(ROOT, "agentrpa_bridge", "yingdao_mcp_server.py")
 

@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 """生成 Release 配图（Pillow）。输出到仓库 docs/assets/。"""
 import os
+
 from PIL import Image, ImageDraw, ImageFont
 
 OUT = r"D:\github\rpa-llm-bridge\docs\assets"

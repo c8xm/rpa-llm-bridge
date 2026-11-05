@@ -23,17 +23,30 @@ import urllib.error
 import urllib.request
 from dataclasses import dataclass, field
 
-from .mcp_client import McpError, McpStdioClient, argv_for, unwrap_agent_text
+from .mcp_client import McpError, McpStdioClient, McpTimeout, argv_for, unwrap_agent_text
 
 _SECRET_RE = re.compile(
     r"(sk-[A-Za-z0-9_\-]{8,}|ghp_[A-Za-z0-9]{20,}|AKIA[0-9A-Z]{12,}"
     r"|Bearer\s+[A-Za-z0-9._\-]{10,})")
 
+# PII：审计只留指纹，不留可定位到人的内容
+_PII_RULES = (
+    ("[ID_CARD]", re.compile(r"(?<![0-9A-Za-z])([1-9]\d{5}(?:19|20)\d{2}"
+                             r"(?:0[1-9]|1[0-2])(?:0[1-9]|[12]\d|3[01])\d{3}[\dXx])"
+                             r"(?![0-9A-Za-z])")),
+    ("[PHONE]", re.compile(r"(?<!\d)(1[3-9]\d{9})(?!\d)")),
+    ("[BANK_CARD]", re.compile(r"(?<!\d)(\d{16,19})(?!\d)")),
+    ("[EMAIL]", re.compile(r"([A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,})")),
+)
+
 
 def redact(text: str) -> str:
     if not text:
         return text
-    return _SECRET_RE.sub("[REDACTED]", text)
+    text = _SECRET_RE.sub("[REDACTED]", text)
+    for placeholder, pattern in _PII_RULES:
+        text = pattern.sub(placeholder, text)
+    return text
 
 
 class AgentError(RuntimeError):
@@ -144,7 +157,10 @@ class McpAgentProvider(BaseProvider):
                meta: dict | None = None, timeout: float | None = None) -> dict:
         timeout = timeout or self.spec.timeout
         started = time.monotonic()
-        with self._lock:
+        # 锁等待必须受调用方预算约束：否则慢请求会把并发池占满，503 也回不去
+        if not self._lock.acquire(timeout=timeout):
+            raise AgentError(f"[{self.spec.name}] busy：会话被占用超过 {timeout}s")
+        try:
             last_err = None
             for attempt in (1, 2):
                 try:
@@ -162,12 +178,17 @@ class McpAgentProvider(BaseProvider):
                         "raw": {"images": out.get("images"), "structured": out.get("structured")},
                         "meta": meta or {},
                     }
+                except McpTimeout as exc:
+                    # 超时不重试：预算是调用方给的，重试等于翻倍；带副作用的 agent 还会重复执行
+                    raise AgentError(f"[{self.spec.name}] {exc}") from exc
                 except (McpError, OSError) as exc:
                     last_err = exc
                     self._reset()
                     if attempt == 1:
-                        continue  # 进程死了就重连一次，第二次失败才上抛
+                        continue  # 进程死了才重连一次，第二次失败才上抛
             raise AgentError(f"[{self.spec.name}] {last_err}") from last_err
+        finally:
+            self._lock.release()
 
     def _reset(self):
         if self._client:

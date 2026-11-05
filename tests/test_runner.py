@@ -2,9 +2,8 @@
 
 from __future__ import annotations
 
-from tests.conftest import FakeDriver, make_step
-
 from agentrpa.core.runner import RecipeRunner
+from tests.conftest import FakeDriver, make_step
 
 
 def recipe(*steps, name: str = "t", vars_: dict | None = None):
