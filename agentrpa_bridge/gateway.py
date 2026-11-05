@@ -56,6 +56,7 @@ class GatewayConfig:
     idle_ttl: float = 180.0
     audit_dir: str = "artifacts/audit"
     job_ttl: float = 3600.0
+    idempotency_ttl: float = 900.0
 
     @classmethod
     def from_env(cls) -> "GatewayConfig":
@@ -75,6 +76,7 @@ class GatewayConfig:
             idle_ttl=float(os.environ.get("AGENTRPA_IDLE_TTL", "180")),
             audit_dir=os.environ.get("AGENTRPA_AUDIT_DIR", "artifacts/audit"),
             job_ttl=float(os.environ.get("AGENTRPA_JOB_TTL", "3600")),
+            idempotency_ttl=float(os.environ.get("AGENTRPA_IDEMPOTENCY_TTL", "900")),
         )
 
 
@@ -167,6 +169,41 @@ class GatewayState:
         self.semaphore = threading.BoundedSemaphore(max(1, config.max_concurrency))
         self.jobs = {}
         self._jobs_lock = threading.Lock()
+        # 幂等表：(tenant, key) -> {"done": bool, "code": int, "payload": dict,
+        #                          "event": Event, "ts": float}
+        self.idem = {}
+        self._idem_lock = threading.Lock()
+
+    # ---- 幂等表 ----
+    def idem_get(self, key: tuple):
+        with self._idem_lock:
+            self._gc_idem()
+            return self.idem.get(key)
+
+    def idem_new(self, key: tuple) -> dict:
+        entry = {"done": False, "code": 0, "payload": {}, "ts": time.time(),
+                 "event": threading.Event()}
+        with self._idem_lock:
+            self.idem[key] = entry
+        return entry
+
+    def idem_finish(self, key: tuple, code: int, payload: dict):
+        with self._idem_lock:
+            entry = self.idem.get(key)
+            if entry is None:
+                return
+            entry.update({"done": True, "code": code, "payload": payload,
+                          "ts": time.time()})
+        entry["event"].set()
+
+    def _gc_idem(self):
+        ttl = self.config.idempotency_ttl
+        if ttl <= 0:
+            self.idem.clear()
+            return
+        now = time.time()
+        for k in [k for k, v in self.idem.items() if now - v["ts"] > ttl]:
+            self.idem.pop(k, None)
 
     # ---- 任务表 ----
     def new_job(self) -> str:
@@ -345,8 +382,39 @@ def _make_handler(state: GatewayState):
                     daemon=True).start()
                 self._send(202, {"run_id": run_id, "status": "queued"})
                 return
-            _invoke_once(state, self.request_id, agent, prompt, cwd, timeout, meta,
-                         None, self._send)
+
+            # 幂等：RPA 超时重试时，同一个 Idempotency-Key 不会把 agent 跑两遍
+            raw_key = (self.headers.get("Idempotency-Key") or "").strip()
+            idem_key = (tenant, raw_key) if raw_key else None
+            if idem_key:
+                hit = state.idem_get(idem_key)
+                if hit is not None:
+                    if not hit["done"]:
+                        hit["event"].wait(state.config.queue_timeout)
+                    if hit["done"]:
+                        payload = dict(hit["payload"])
+                        payload["idempotent_replay"] = True
+                        self._send(hit["code"] or 200, payload)
+                        return
+                    self._reject(409, {"error": "duplicate request in flight",
+                                       "request_id": self.request_id})
+                    return
+                state.idem_new(idem_key)
+
+            captured = {}
+
+            def _send_and_capture(code, payload):
+                captured["code"] = code
+                captured["payload"] = payload
+                self._send(code, payload)
+
+            try:
+                _invoke_once(state, self.request_id, agent, prompt, cwd, timeout, meta,
+                             None, _send_and_capture)
+            finally:
+                if idem_key:
+                    state.idem_finish(idem_key, captured.get("code", 502),
+                                      captured.get("payload", {}))
 
     return Handler
 

@@ -6,7 +6,7 @@
 - **v2.0 桥（`agentrpa_bridge`）**：影刀 / UiPath / Power Automate 反过来调用 Codex / Claude / DeepSeek Harness / 豆包，凭证托管、进程复用、并发闸门、限速、审计、指标；同时把影刀应用注册成 MCP 工具给智能体调用。
 
 [![CI](https://github.com/c8xm/rpa-llm-bridge/actions/workflows/ci.yml/badge.svg)](https://github.com/c8xm/rpa-llm-bridge/actions/workflows/ci.yml)
-![version](https://img.shields.io/badge/version-2.2.0-blue)
+![version](https://img.shields.io/badge/version-2.3.0-blue)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 ![python](https://img.shields.io/badge/python-3.11%20%7C%203.12-blue)
 
@@ -76,6 +76,20 @@
 | 审计只脱敏 key，不脱敏 PII | 手机 / 身份证 / 银行卡 / 邮箱统一打码 |
 
 另外：`AGENTRPA_ALLOW_ANON` 默认改为 `0`；RPA 并发槽位加 `YINGDAO_MAX_HOLD` 自动回收；wheel 补发 `server.py` 与影刀 SDK。
+
+### v2.3 新增：调用幂等 + 参数注入防护
+
+| 能力 | 用法 | 行为 |
+|---|---|---|
+| 幂等调用 | `Idempotency-Key: <业务单号>` | 同 key 在窗口内只跑一次 agent，重复请求直接回放结果（`idempotent_replay: true`），并发重复请求返回 409 |
+| 参数转义 | 自动生效 | Windows `.cmd` shim 的 `& \| < > ^ ( )` 统一转义，prompt 里的 `& calc` 不会变成第二条命令 |
+
+```powershell
+curl -s -X POST http://127.0.0.1:8765/v1/invoke `
+  -H "Authorization: Bearer tok-a" -H "Idempotency-Key: order-88123" `
+  -H "Content-Type: application/json" `
+  -d '{"agent":"codex","prompt":"……"}'
+```
 
 ## 快速开始
 
@@ -148,7 +162,7 @@ rpa-llm-bridge/
 ├─ scripts/                  export_mcp_config.py / install_windows.ps1 / make_assets.py
 ├─ examples/                 local_demo.py（RPA 调智能体）/ reverse_demo.py（智能体调 RPA）
 │                            mock_yingdao_server.py（没有影刀环境时的假开放 API）
-├─ tests/                    120 个用例（内核 43 + 桥 51 + 反方向 5 + 护栏 11 + 加固 10）
+├─ tests/                    131 个用例（内核 43 + 桥 51 + 反方向 5 + 护栏 11 + 加固 10 + 幂等/转义 11）
 └─ docs/                     USAGE.md / ENTERPRISE-ADOPTION.md / PLATFORMS.md / BRIDGE_DESIGN.md / DESIGN.md
 ```
 

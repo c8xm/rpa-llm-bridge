@@ -32,14 +32,35 @@ class McpTimeout(McpError):
     """等待响应超时（进程可能已卡死或未完成初始化）。"""
 
 
+_CMD_META = '&|<>^()%'
+
+
+def _escape_for_cmd(arg: str) -> str:
+    """cmd /c 会二次解析参数：把元字符转义掉，避免 `& calc` 之类被当成新命令。"""
+    if arg == "":
+        return '""'
+    out = []
+    in_quotes = False
+    for ch in arg:
+        if ch == '"':
+            in_quotes = not in_quotes
+            out.append(ch)
+            continue
+        if not in_quotes and ch in _CMD_META:
+            # 引号内 cmd 不解释 & | < >，但 ^ 和 % 仍特殊，统一转义更稳
+            out.append("%" if ch == "%" else "^" + ch)
+        else:
+            out.append(ch)
+    return "".join(out)
+
+
 def argv_for(command: str, args) -> list:
     """解析可执行文件；Windows 下的 .cmd/.bat shim（npm 装的 codex/claude/dsh 都是）
     必须经 cmd /c 才能被 CreateProcess 执行。"""
     exe = shutil.which(command) or command
-    argv = [exe, *args]
     if os.name == "nt" and exe.lower().endswith(_WIN_SHIMS):
-        return ["cmd", "/c", *argv]
-    return argv
+        return ["cmd", "/c", exe, *[_escape_for_cmd(str(a)) for a in args]]
+    return [exe, *args]
 
 
 _argv_for = argv_for  # 兼容旧名

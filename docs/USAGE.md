@@ -1,4 +1,4 @@
-# 使用说明 · rpa-llm-bridge v2.0
+# 使用说明 · rpa-llm-bridge v2.3
 
 > 这份文档是操作手册，不是概念介绍。每一节都能直接照抄执行。
 > 概念与取舍见 [DESIGN.md](DESIGN.md)（v0.1 内核）与 [BRIDGE_DESIGN.md](BRIDGE_DESIGN.md)（v2.0 桥）；
@@ -90,7 +90,7 @@ python examples\local_demo.py
 ### 2.4 验证安装
 
 ```powershell
-python -m pytest                          # 120 passed（未装 openpyxl 时 114 passed, 1 skipped）
+python -m pytest                          # 131 passed（未装 openpyxl 时 125 passed, 1 skipped）
 python server.py --help 2>$null; echo $LASTEXITCODE   # v0.1 MCP 入口可加载
 python agentrpa_bridge\yingdao_mcp_server.py --selftest
 ```
@@ -147,6 +147,7 @@ agentrpa_agent_avg_ms{agent="codex"} 70
 | `AGENTRPA_IDLE_TTL` | `180` | MCP 会话空闲回收（秒） |
 | `AGENTRPA_AUDIT_DIR` | `artifacts/audit` | 审计目录 |
 | `AGENTRPA_JOB_TTL` | `3600` | 异步任务记录保留（秒） |
+| `AGENTRPA_IDEMPOTENCY_TTL` | `900` | `Idempotency-Key` 结果缓存时长（秒），0 = 关闭 |
 
 ### 4.2 后端
 
@@ -231,6 +232,10 @@ curl -s -X POST http://127.0.0.1:8765/v1/invoke `
 | `timeout_s` | 否 | 覆盖后端默认超时 |
 | `meta` | 否 | 任意键值，进审计，不回传模型 |
 
+**幂等**：带 `Idempotency-Key: <业务单号>` 时，同 key 在 `AGENTRPA_IDEMPOTENCY_TTL` 窗口内
+只会真正跑一次 agent；重复请求直接回放上次结果并带 `idempotent_replay: true`，
+并发重复请求等待首个完成后同样回放（等待超时回 `409`）。RPA 超时重试请务必带这个头。
+
 ### 5.3 `POST /v1/jobs` + `GET /v1/jobs/{id}`（异步）
 
 超过 60 秒的任务一律用异步，避免 RPA 线程被 HTTP 超时切断：
@@ -263,6 +268,8 @@ curl -s http://127.0.0.1:8765/metrics   -H "Authorization: Bearer tok-a" # Prome
 | 200 | 成功 | 取 `text` |
 | 202 | 已入队 | 轮询 `/v1/jobs/{id}` |
 | 400 | 缺 prompt / JSON 坏 | 修流程，不要重试 |
+| 413 | 请求体超过 2MB | 改走文件 + 路径，不要重试 |
+| 409 | 同一 Idempotency-Key 仍在执行 | 稍后重试，会拿到同一结果 |
 | 401 | token 错 | 检查配置，不要重试 |
 | 429 | 撞限速 | 退避后重试 |
 | 502 | 后端失败（进程崩、模型报错） | 读 `detail`；可重试一次 |
@@ -601,7 +608,7 @@ MCP 会话是串行的（一条 stdio 管道），**要真并行就同名多实�
 | `MCP 进程退出：… ENOENT` | CLI 不在 PATH | 环境变量填绝对路径；`.cmd` shim 已由 `argv_for` 包 `cmd /c` |
 | `响应超时 180s` | 任务真长 / 进程卡死 | 看 `/v1/agents` 的 session；长任务改 `/v1/jobs` |
 | `spawn claude ENOENT` | Claude Code 不在 PATH | `where claude` 后填绝对路径 |
-| 401 | token 不在 `AGENTRPA_TOKENS` | 检查 `tenant:token` 拼写 |
+| 401 | token 不在 `AGENTRPA_TOKENS`（或没配 tokens 却带了 token） | 检查 `tenant:token` 拼写 |
 | 429 | 撞限速 | 退避重试或调 `AGENTRPA_RATE_LIMIT` |
 | 503 busy | 并发满 | 调 `AGENTRPA_MAX_CONCURRENCY` / `QUEUE_TIMEOUT` |
 | 502 且 detail 提到 model | 豆包 model 填了模型名 | 改接入点 `ep-...` |
@@ -619,7 +626,8 @@ MCP 会话是串行的（一条 stdio 管道），**要真并行就同名多实�
 ## 12. 安全边界
 
 - 凭证分层：工位只有网关 token；模型 key 只存在网关机；影刀 AccessKey 只存在反向 MCP 进程。
-- 审计：`prompt` 只存前 200 字符 + sha256；`sk-*` / `ghp_*` / `AKIA*` / `Bearer *` 一律 `[REDACTED]`。
+- 审计：`prompt` 只存前 200 字符 + sha256；`sk-*` / `ghp_*` / `AKIA*` / `Bearer *` 一律 `[REDACTED]`；
+  手机号、身份证、银行卡、邮箱分别打码为 `[PHONE]` / `[ID_CARD]` / `[BANK_CARD]` / `[EMAIL]`。
 - 限速与并发：默认 60/min/tenant、4 并发，防止单个流程打穿额度。
 - 审计日志按天落盘，交给现有采集器推 SIEM。
 - 不做的事：不把 agent 输出直接拼 SQL / 命令行 / 文件路径；不可逆动作留在 RPA 审批节点。
@@ -630,7 +638,7 @@ MCP 会话是串行的（一条 stdio 管道），**要真并行就同名多实�
 ## 13. 开发与测试
 
 ```powershell
-python -m pytest                                   # 全部 110 个用例
+python -m pytest                                   # 全部 131 个用例
 python -m pytest tests/test_gateway.py -v          # 单文件
 python -m unittest tests.test_gateway              # 桥的部分不需要 pytest
 ruff check agentrpa agentrpa_bridge server.py tests --select E9,F63,F7,F82
@@ -645,7 +653,7 @@ agentrpa/                  v0.1 内核：core / drivers / recipes
 agentrpa_bridge/           v2.0 桥：mcp_client / providers / gateway / yingdao_*
 sdk/rpa_agent_block.py     影刀代码块单文件 SDK
 scripts/                   export_mcp_config.py / install_windows.ps1 / make_assets.py
-tests/                     110 个用例（内核 43 + 桥 51 + 反方向 5 + 护栏 11）
+tests/                     131 个用例（内核 43 + 桥 51 + 反方向 5 + 护栏 11 + 加固 10 + 幂等/转义 11）
 examples/local_demo.py     无 key 端到端演示
 ```
 
